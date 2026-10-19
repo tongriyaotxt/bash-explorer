@@ -1,0 +1,21 @@
+# build output
+*.exe
+*.pdb
+*.dll
+
+# runtime state (contains local paths / selections)
+state/
+_inv.jsonl
+_inv.tsv
+*.orig
+*.bak
+xc-back-*.txt
+xc-fwd-*.txt
+xgn-diag.txt
+xg-diag.txt
+
+# editor / OS noise
+.vs/
+*.user
+Thumbs.db
+desktop.ini
