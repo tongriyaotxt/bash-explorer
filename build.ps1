@@ -23,12 +23,12 @@ foreach ($f in @('xs\xs.cs', 'xs\xg.cs')) {
     else { Write-Host "  OK: $f" -ForegroundColor DarkGray }
 }
 
-function Build([string]$src, [string]$out, [string[]]$refs) {
+function Build([string]$src, [string]$out, [string[]]$refs, [string]$target = 'winexe') {
     if (Test-Path $out) {
         try { Remove-Item $out -Force -ErrorAction Stop }
         catch { throw "输出被占用，先关掉正在运行的 $out" }
     }
-    $args = @('/nologo', '/target:winexe', "/out:$out") + ($refs | ForEach-Object { "/r:$_" }) + @($src)
+    $args = @('/nologo', "/target:$target", "/out:$out") + ($refs | ForEach-Object { "/r:$_" }) + @($src)
     & $csc @args
     if ($LASTEXITCODE -ne 0) { throw "编译失败：$src" }
     $kb = [math]::Round((Get-Item $out).Length / 1KB, 1)
@@ -38,15 +38,17 @@ function Build([string]$src, [string]$out, [string[]]$refs) {
 Write-Host "== 编译 ==" -ForegroundColor Cyan
 $base = @('System.dll', 'System.Core.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll',
           'Microsoft.VisualBasic.dll', 'Microsoft.CSharp.dll')
-Build (Join-Path $root 'xs\xs.cs') (Join-Path $root 'xs\xs.exe') $base
+Build (Join-Path $root 'xs\xs.cs') (Join-Path $root 'xs\xs.exe') $base 'exe'   # 控制台程序
 Build (Join-Path $root 'xs\xg.cs') (Join-Path $root 'xs\xg.exe') $base
 
 if ($Test) {
     Write-Host "== 冒烟测试 ==" -ForegroundColor Cyan
-    $out = & (Join-Path $root 'xs\xs.exe') -c 'pwd' $root
-    if ($LASTEXITCODE -ne 0) { throw "xs.exe 冒烟失败" }
+    Push-Location $root
+    $out = & (Join-Path $root 'xs\xs.exe') -c 'pwd'; $code = $LASTEXITCODE; Pop-Location
+    if ($code -ne 0) { throw "xs.exe 冒烟失败" }
     Write-Host "  xs: $out" -ForegroundColor DarkGray
-    $out2 = & (Join-Path $root 'xs\xs.exe') -c 'ls' $root
+    Push-Location $root
+    $out2 = & (Join-Path $root 'xs\xs.exe') -c 'ls'; Pop-Location
     Write-Host ("  xs ls: {0} 行" -f (@($out2).Count)) -ForegroundColor DarkGray
     Write-Host "  xg: 需人眼确认（start xs\xg.exe）" -ForegroundColor DarkGray
 }

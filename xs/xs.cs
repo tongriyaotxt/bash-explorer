@@ -114,7 +114,7 @@ static class Xs
         bool batch = (oneShot != null || scriptFile != null) || Console.IsOutputRedirected;
         if (batch)
         {
-            C_DIM = C_DIR = C_ACC = C_ERR = C_OK = C_REV = C_BOLD = "";
+            C_OFF = C_DIM = C_DIR = C_ACC = C_ERR = C_OK = C_REV = C_BOLD = "";
             if (scriptFile != null)
             {
                 foreach (var ln in File.ReadAllLines(scriptFile))
