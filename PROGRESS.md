@@ -1,6 +1,6 @@
-# 进度存档 / 下次从这里接着 debug
+﻿# 进度存档 / 下次从这里接着 debug
 
-> 存档时间：2026-10-19 23:25 · 仓库：`tongriyaotxt/explorer-bridge`（private，main）
+> 存档时间：2026-10-19 23:25 · 仓库：`tongriyaotxt/bash-explorer`（private，main）
 > 代码全在 `D:\项目\闲扯\explorer-bash`，已提交并推送。
 
 ---

@@ -1,4 +1,4 @@
-# Explorer × Command Line
+﻿# Explorer × Command Line
 
 把 Windows 的 **Shell 命名空间**用命令行操作：不是"打开文件夹再点鼠标"，也不是"纯终端看不见东西"。
 
