@@ -50,7 +50,22 @@ if ($Test) {
     Push-Location $root
     $out2 = & (Join-Path $root 'xs\xs.exe') -c 'ls'; Pop-Location
     Write-Host ("  xs ls: {0} 行" -f (@($out2).Count)) -ForegroundColor DarkGray
-    Write-Host "  xg: 需人眼确认（start xs\xg.exe）" -ForegroundColor DarkGray
+
+    # xg 自检：窗口自己开自己关，结果落到 %TEMP%\xg-selftest.txt
+    $st = Join-Path $env:TEMP 'xg-selftest.txt'
+    $crash = Join-Path $env:TEMP 'xg-crash.log'
+    $histFile = Join-Path $env:TEMP 'xg-selftest-history.tsv'
+    Remove-Item $st, $crash, $histFile -Force -ErrorAction SilentlyContinue
+    $env:XG_HISTORY = $histFile          # 自检别污染真实历史
+    & (Join-Path $root 'xs\xg.exe') --selftest $root
+    $deadline = (Get-Date).AddSeconds(25)
+    while (-not (Test-Path $st) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 300 }
+    if (-not (Test-Path $st)) { throw "xg --selftest 没有产出结果" }
+    $lines = @(Get-Content $st -Encoding UTF8)
+    Write-Host "  xg selftest:" -ForegroundColor DarkGray
+    foreach ($l in $lines) { Write-Host "    $l" -ForegroundColor DarkGray }
+    if ($lines -match '^EXCEPTION') { throw "xg 自检里出现异常（见上，或 %TEMP%\xg-crash.log）" }
+    if (Test-Path $crash) { throw "xg 产生了崩溃日志：$crash" }
 }
 
 Write-Host ""

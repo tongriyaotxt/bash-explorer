@@ -1,4 +1,4 @@
-﻿# Explorer × Command Line
+# Explorer × Command Line
 
 把 Windows 的 **Shell 命名空间**用命令行操作：不是"打开文件夹再点鼠标"，也不是"纯终端看不见东西"。
 
@@ -99,11 +99,26 @@ D:\项目\闲扯                    5 items [detail] · XS.md
 
 ## xg
 
-WinForms 图形界面：顶部两行命令行（启动即聚焦），中间是资源管理器风格的图标/明细列表，右侧是预览窗格。
+WinForms 图形界面：顶部面包屑 + 工具条 + 命令行（启动即聚焦），中间是资源管理器风格的图标/明细列表，右侧是预览窗格。
 
 - 图标用**系统图标列表**（`SHGetFileInfo` + `LVM_SETIMAGELIST`），和 Explorer 画的是同一套
-- 预览用 **`IShellItemImageFactory`**：图片/视频/PDF/Office 出真缩略图；文本直接显示正文
-- 键位照资源管理器：`Backspace` 后退、`Alt+←/→` 前进后退、`Alt+↑` 上一级、`Delete` 移到回收站、`F2` 改名
+- 图标视图用 **`IShellItemImageFactory`** 出真缩略图（文本文件也有），尺寸四档
+  48 / 96 / 144 / 256，`Ctrl+滚轮` 或 `icon 144` 切；明细视图点列头排序
+- 预览用同一套缩略图接口：图片/视频/PDF/Office 出真缩略图，图片吃满右栏（拖分隔条更大）；
+  文本直接显示正文
+- 图片按 `Enter` 进**内置全屏看图**：`←/→` 在同目录图片间切换（系统"照片"单开一张时切不了），
+  `Esc` 关闭；右键「用系统程序打开」可交回系统
+- **历史文件夹**：每进一个目录记一笔（`%LOCALAPPDATA%\xg\history.tsv`），`hist` 弹查询窗
+  （输入过滤 + `↑↓` + `Enter` 跳转），`hist 关键字` 直接跳，`hist -c` 按次数、`-t` 按最近
+- 右键菜单：打开 / 在终端中打开 / 在资源管理器中显示 / 复制路径 / 重命名 / 删除 / 属性
+- 键位照资源管理器：`Backspace` 后退、`Alt+←/→` 前进后退、`Alt+↑` 上一级、
+  `Delete` 移到回收站、`Shift+Delete` 永久删除、`F2` 改名、`Alt+Enter` 属性
+  （焦点在命令行、且命令行空着时，`Delete` / `F2` / `F4` / `F5` 同样作用于列表选中项）
+- `sel *.md` / `sel pic.jpg` 按名字选中；命令行语法尽量按 Linux 来：
+  `ls -t` `cd -` `cd ~` `mkdir -p` `rm -rf` `cp -r` `mv` `cat` `touch` `trash`（回收站），
+  也认 `dir md del rd ren move copy type cls`
+- `xg --run "ic;sort size desc" D:\某目录` 打开后直接执行命令；
+  `xg --selftest` 不依赖鼠标跑一遍自检（`build.ps1 -Test` 已接入）
 
 详见 [XG.md](XG.md)。
 
@@ -162,6 +177,9 @@ explorer-bash/
 4. **DPI**：exe 没有 manifest 会被系统按 150% 拉伸，`GetWindowRect` 返回虚拟坐标，列宽全错。
    解法是启动时 `SetProcessDpiAwareness(2)` 并自己按 `DpiX/96` 算尺寸。
 5. **虚拟命名空间里 `ParseName("OS (C:)")` 认不出盘符显示名**，要回退到按显示名遍历匹配。
+6. **`ImageList` 不复制位图**：`Images.Add(img)` 只存引用，句柄要等赋给控件才创建；
+   提前 `Dispose` 会让 `CreateHandle` 抛 `ArgumentException: 参数无效`。而且 `lv.View`
+   已经切过去了，看起来像"视图切了、按钮文字没跟上"——其实是异常把后面的行截断了。
 
 ---
 
