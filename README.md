@@ -111,6 +111,9 @@ WinForms 图形界面：顶部面包屑 + 工具条 + 命令行（启动即聚�
 - **历史文件夹**：每进一个目录记一笔（`%LOCALAPPDATA%\xg\history.tsv`），`hist` 弹查询窗
   （输入过滤 + `↑↓` + `Enter` 跳转），`hist 关键字` 直接跳，`hist -c` 按次数、`-t` 按最近
 - 右键菜单：打开 / 在终端中打开 / 在资源管理器中显示 / 复制路径 / 重命名 / 删除 / 属性
+- `wt`（= `term` / `terminal`）在当前目录开 Windows Terminal：`wt` 就地开、`wt ..` 上一级、
+  `wt D:\某目录 bash` 指定目录并直接跑命令、`wt 文件名` 落到文件所在目录；
+  没有 `wt.exe` 回退 `cmd /k cd /d`，和右键菜单「在终端中打开」共用 `LaunchTerminal`
 - 键位照资源管理器：`Backspace` 后退、`Alt+←/→` 前进后退、`Alt+↑` 上一级、
   `Delete` 移到回收站、`Shift+Delete` 永久删除、`F2` 改名、`Alt+Enter` 属性
   （焦点在命令行、且命令行空着时，`Delete` / `F2` / `F4` / `F5` 同样作用于列表选中项）

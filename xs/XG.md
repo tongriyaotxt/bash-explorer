@@ -176,9 +176,28 @@ xg --selftest D:\项目       跑一遍自检，结果写 %TEMP%\xg-selftest.txt
 | `clear` | ✅ | 清命令历史 |
 
 保留的 GUI 命令：`ic`（图标视图）`icon 48|96|144|256` `big` `sel 名字/*.md` `sort name|size [asc|desc]`
-`open` `info` `roots` `up` `back` `help` `exit`
+`open` `wt [目录|文件] [命令…]` `info` `roots` `up` `back` `help` `exit`
 
 Windows 别名也认：`dir` `md` `del` `erase` `rd` `ren` `move` `copy` `type` `cls`。
+
+### wt：在当前目录开 Windows Terminal
+
+```
+wt                         # xg 的当前目录
+wt .                       # 同上，写清楚点
+wt ..                      # 上一级
+wt D:\项目                 # 指定目录
+wt 某文件夹                # 也认当前列表里的显示名
+wt C:\Windows\notepad.exe  # 给文件 → 在它所在目录开
+wt D:\项目 bash            # 目录 + 想在里面跑的命令（目录后面接什么就传什么）
+```
+
+等价于 `wt.exe -d "<目录>"`，进程工作目录也一起设好；机器上没有 `wt.exe` 就回退 `cmd /k cd /d`——
+右键菜单「在此处打开终端」和它是同一个函数（`LaunchTerminal`），改一处两边都变。
+
+虚拟命名空间（此电脑 / 回收站 / `shell:`）没有文件系统路径，`wt` 直接拦下报「当前不是文件系统位置」。
+`-` 开头的词会被命令行当标志位吃掉，所以 wt 自己的参数（`-w` `-p` 那套）别在 xg 里写。
+干跑：设 `XG_WT_DRY=1` 时只把拼好的命令行追加到 `%TEMP%\xg-wt.txt`，不真的启终端（自检用）。
 
 `cd` 认四类目标：文件系统路径（含 `/`、`..`、`~`）、`::{GUID}`、**子项显示名**（`cd "OS (C:)"`）、`shell:` 前缀。
 

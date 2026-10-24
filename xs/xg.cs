@@ -1461,21 +1461,82 @@ class Frm : Form, IMessageFilter
     }
 
     void OpenTerminal()
-    {        var it = SelectedOne();
+    {
+        var it = SelectedOne();
         string dir = curPath;
         if (it != null)
         {
             if (it.IsFolder) dir = it.Path;
             else if (it.Path != null) dir = Path.GetDirectoryName(it.Path);
         }
+        LaunchTerminal(dir, null);
+    }
+
+    // wt [目录|文件] [在里面跑的命令…]
+    //   不给参数 → 就在 xg 的当前目录开一个 Windows Terminal
+    //   给目录   → 在那个目录开；给文件 → 在文件所在目录开；给显示名 → 先按当前列表里的项找
+    //   后面还能跟命令：wt . bash / wt D:\项目 pwsh / wt .. cmd
+    void OpenWt(string a1, List<string> rest)
+    {
+        string dir = curPath;
+
+        if (!string.IsNullOrEmpty(a1))
+        {
+            string p = FsPath(a1);
+            if (Directory.Exists(p)) dir = p;
+            else if (File.Exists(p)) dir = Path.GetDirectoryName(p);
+            else
+            {
+                var it = FindItem(a1);
+                if (it != null && Xg.IsFs(it.Path))
+                    dir = it.IsFolder ? it.Path : Path.GetDirectoryName(it.Path);
+                else { Msg("没有这个目录: " + a1); return; }
+            }
+        }
+
+        LaunchTerminal(dir, rest);
+    }
+
+    // 在 Windows Terminal 里打开 dir；没有 wt.exe 就回退 cmd /k cd /d（和右键菜单同一套）
+    void LaunchTerminal(string dir, List<string> run)
+    {
         if (!Xg.IsFs(dir)) { Msg("当前不是文件系统位置"); return; }
-        try { Process.Start("wt.exe", "-d \"" + dir + "\""); }
+
+        var line = new StringBuilder("-d ");
+        line.Append(QArg(dir));
+        bool withCmd = run != null && run.Count > 0;
+        if (withCmd) foreach (var r in run) line.Append(' ').Append(QArg(r));
+
+        // 自检/无窗口验证：XG_WT_DRY 非空就只记一行、真不启终端（和 XG_HISTORY 一个路数）
+        if (Environment.GetEnvironmentVariable("XG_WT_DRY") != null)
+        {
+            try
+            {
+                File.AppendAllText(Path.Combine(Path.GetTempPath(), "xg-wt.txt"),
+                    line.ToString() + "   @ " + dir + "\r\n", Encoding.UTF8);
+            }
+            catch { }
+            Msg("wt(dry) · " + dir);
+            return;
+        }
+
+        try
+        {
+            var psi = new ProcessStartInfo("wt.exe", line.ToString());
+            psi.WorkingDirectory = dir;
+            psi.UseShellExecute = true;
+            Process.Start(psi);
+            Msg("wt · " + dir + (withCmd ? " · " + string.Join(" ", run.ToArray()) : ""));
+        }
         catch
         {
-            try { Process.Start("cmd.exe", "/k cd /d \"" + dir + "\""); }
+            try { Process.Start("cmd.exe", "/k cd /d " + QArg(dir)); }
             catch (Exception e) { Msg(e.Message); }
         }
     }
+
+    // 拼命令行用：路径里有空格/中文/& 都不散架
+    static string QArg(string s) { return "\"" + s.Replace("\"", "\\\"") + "\""; }
 
     void RevealInExplorer()
     {
@@ -1812,6 +1873,7 @@ class Frm : Form, IMessageFilter
     static readonly string[] CmdNames = { "ls", "ll", "ic", "icons", "cd", "pwd", "up", "back",
                                           "mkdir", "md", "rm", "del", "rmdir", "mv", "cp", "cat",
                                           "touch", "trash", "hist", "sort", "sel", "icon", "big", "open",
+                                          "wt", "term", "terminal",
                                           "info", "roots", "clear", "help", "exit" };
     readonly List<Cand> compCands = new List<Cand>();
     int compIdx = -1;
@@ -2003,12 +2065,15 @@ class Frm : Form, IMessageFilter
             case "icon": case "size": IconCmd(args); break;
             case "big": CycleIconSize(); break;
             case "open": OpenNamed(a1); break;
+            case "wt": case "term": case "terminal":
+                OpenWt(a1, args.Count > 1 ? args.GetRange(1, args.Count - 1) : null);
+                break;
             case "info": Info(a1); break;
             case "roots": Roots(); break;
             case "hist": case "history": HistCmd(flags, args); break;
             case "clear": case "cls": hist.Clear(); hIdx = 0; lblStatus.Text = ""; break;
             case "help": case "?":
-                Msg("ls [-l|-t|-S|-r] [目录] · cd [-|~|目录] · pwd · mkdir [-p] · rm [-r] [-f] · rmdir · mv · cp [-r] · cat · touch · trash · hist [-t|-c|-x] [关键字] · sel · sort · icon · big · open · info · roots · clear · exit");
+                Msg("ls [-l|-t|-S|-r] [目录] · cd [-|~|目录] · pwd · mkdir [-p] · rm [-r] [-f] · rmdir · mv · cp [-r] · cat · touch · trash · hist [-t|-c|-x] [关键字] · sel · sort · icon · big · open · wt [目录|文件] [命令…] · info · roots · clear · exit");
                 break;
             case "exit": case "q": Close(); break;
             default: Msg("未知命令: " + v + "（help 看列表）"); break;
@@ -2490,6 +2555,7 @@ class Frm : Form, IMessageFilter
         CmdKeyDown(txtCmd, new KeyEventArgs(Keys.Tab));
         sb.AppendLine("tab via KeyDown   -> '" + txtCmd.Text + "'");
         sb.AppendLine("compl 'mk'          -> '" + CompText("mk") + "'");
+        sb.AppendLine("compl 'wt'          -> '" + CompText("wt") + "'");
         sb.AppendLine("compl 'cd ex'       -> '" + CompText("cd ex") + "'");
         sb.AppendLine("compl 'cd xs\\xg.e'  -> '" + CompText("cd xs\\xg.e") + "'");
         sb.AppendLine("compl 'cd 有'       -> '" + CompText("cd 有") + "'");

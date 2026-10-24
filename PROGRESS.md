@@ -62,6 +62,9 @@
   保留 Windows 别名（`dir md del rd ren move copy type cls`）和 GUI 命令（`ic icon big sel sort open info roots up back`）。
 - **`sel` 命令**：`sel *.md` / `sel pic.jpg` 按名字（`*` `?`）选中，配合预览与批量操作。
 - **图标索引缓存**：同一扩展名不再逐个调 shell（>2000 项目录开销明显下降）。
+- **`wt` 命令**（2026-10-24 补）：`wt [目录|文件] [命令…]` 在当前/指定目录开 Windows Terminal，
+  别名 `term` / `terminal`；`LaunchTerminal(dir, run)` 与右键「在此处打开终端」共用一套（无 `wt` 回退
+  `cmd /k cd /d`），`QArg` 统一加引号；`XG_WT_DRY=1` 干跑只把拼好的命令行写进 `%TEMP%\xg-wt.txt`。
 
 ---
 
