@@ -1538,12 +1538,78 @@ class Frm : Form, IMessageFilter
     // 拼命令行用：路径里有空格/中文/& 都不散架
     static string QArg(string s) { return "\"" + s.Replace("\"", "\\\"") + "\""; }
 
+    // ex [目录|文件] [-s]   —— 和 wt 同一套目标解析，只不过开出来的是资源管理器
+    //   不给参数 → xg 的当前目录
+    //   给目录   → 在那个目录开
+    //   给文件   → 在文件所在目录开；加 -s 就直接选中那个文件
+    //   给显示名 → 先按当前列表里的项找（"OS (C:)" 这种也认）
+    void OpenExplorerAt(string a1, bool select)
+    {
+        string dir = curPath;
+        string pick = null;
+
+        if (!string.IsNullOrEmpty(a1))
+        {
+            string p = FsPath(a1);
+            if (Directory.Exists(p)) dir = p;
+            else if (File.Exists(p)) { dir = Path.GetDirectoryName(p); pick = p; }
+            else
+            {
+                var it = FindItem(a1);
+                if (it != null && Xg.IsFs(it.Path))
+                {
+                    if (it.IsFolder) dir = it.Path;
+                    else { dir = Path.GetDirectoryName(it.Path); pick = it.Path; }
+                }
+                else { Msg("没有这个目录: " + a1); return; }
+            }
+        }
+
+        LaunchExplorer(dir, select ? pick : null);
+    }
+
+    // 在资源管理器里打开 dir；select 非空就 /select, 定位到它（文件、文件夹都行）
+    void LaunchExplorer(string dir, string select)
+    {
+        if (dir == null) dir = curPath;
+        if (!Xg.IsFs(dir)) { Msg("当前不是文件系统位置"); return; }
+
+        // 光给目录：explorer.exe 直接开那个目录；给 /select,：它自己会开父目录并选中
+        var line = new StringBuilder();
+        if (select != null) line.Append("/select,").Append(QArg(select));
+        else line.Append(QArg(dir));
+
+        // 自检/无窗口验证：XG_EX_DRY 非空就只记一行、真不启资源管理器（和 XG_WT_DRY 一个路数）
+        if (Environment.GetEnvironmentVariable("XG_EX_DRY") != null)
+        {
+            try
+            {
+                File.AppendAllText(Path.Combine(Path.GetTempPath(), "xg-ex.txt"),
+                    line.ToString() + "   @ " + dir + "\r\n", Encoding.UTF8);
+            }
+            catch { }
+            Msg("ex(dry) · " + dir);
+            return;
+        }
+
+        try
+        {
+            var psi = new ProcessStartInfo("explorer.exe", line.ToString());
+            psi.WorkingDirectory = dir;
+            psi.UseShellExecute = true;
+            Process.Start(psi);
+            Msg("ex · " + dir + (select != null ? " · 选中 " + Path.GetFileName(select) : ""));
+        }
+        catch (Exception e) { Msg(e.Message); }
+    }
+
     void RevealInExplorer()
     {
         var it = SelectedOne();
         if (it == null || !Xg.IsFs(it.Path)) { Msg("只有文件系统对象能在资源管理器里显示"); return; }
-        try { Process.Start("explorer.exe", "/select,\"" + it.Path + "\""); }
-        catch (Exception e) { Msg(e.Message); }
+        // 和 ex 共用一套启动：定位到该项本身；盘根没有父目录，就拿它自己当工作目录
+        string parent = Path.GetDirectoryName(it.Path);
+        LaunchExplorer(parent == null ? it.Path : parent, it.Path);
     }
 
     void ShowProperties()
@@ -1873,7 +1939,7 @@ class Frm : Form, IMessageFilter
     static readonly string[] CmdNames = { "ls", "ll", "ic", "icons", "cd", "pwd", "up", "back",
                                           "mkdir", "md", "rm", "del", "rmdir", "mv", "cp", "cat",
                                           "touch", "trash", "hist", "sort", "sel", "icon", "big", "open",
-                                          "wt", "term", "terminal",
+                                          "wt", "term", "terminal", "ex", "explorer",
                                           "info", "roots", "clear", "help", "exit" };
     readonly List<Cand> compCands = new List<Cand>();
     int compIdx = -1;
@@ -2068,12 +2134,15 @@ class Frm : Form, IMessageFilter
             case "wt": case "term": case "terminal":
                 OpenWt(a1, args.Count > 1 ? args.GetRange(1, args.Count - 1) : null);
                 break;
+            case "ex": case "explorer": case "exp":
+                OpenExplorerAt(a1, flags.Contains('s'));
+                break;
             case "info": Info(a1); break;
             case "roots": Roots(); break;
             case "hist": case "history": HistCmd(flags, args); break;
             case "clear": case "cls": hist.Clear(); hIdx = 0; lblStatus.Text = ""; break;
             case "help": case "?":
-                Msg("ls [-l|-t|-S|-r] [目录] · cd [-|~|目录] · pwd · mkdir [-p] · rm [-r] [-f] · rmdir · mv · cp [-r] · cat · touch · trash · hist [-t|-c|-x] [关键字] · sel · sort · icon · big · open · wt [目录|文件] [命令…] · info · roots · clear · exit");
+                Msg("ls [-l|-t|-S|-r] [目录] · cd [-|~|目录] · pwd · mkdir [-p] · rm [-r] [-f] · rmdir · mv · cp [-r] · cat · touch · trash · hist [-t|-c|-x] [关键字] · sel · sort · icon · big · open · wt [目录|文件] [命令…] · ex [-s] [目录|文件] · info · roots · clear · exit");
                 break;
             case "exit": case "q": Close(); break;
             default: Msg("未知命令: " + v + "（help 看列表）"); break;
@@ -2495,6 +2564,18 @@ class Frm : Form, IMessageFilter
         return string.Join(", ", names.ToArray());
     }
 
+    // 读某个干跑日志的最后一行（自检看 XG_WT_DRY / XG_EX_DRY 里拼出来的命令行）
+    static string LastLine(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return "(none)";
+            var lines = File.ReadAllLines(path, Encoding.UTF8);
+            return lines.Length > 0 ? lines[lines.Length - 1] : "(empty)";
+        }
+        catch (Exception e) { return "ERR " + e.Message; }
+    }
+
     // --selftest：不依赖鼠标，按脚本跑一遍视图 / 排序 / 面包屑 / 右键菜单 / 预览
     string CompText(string line)
     {
@@ -2537,6 +2618,39 @@ class Frm : Form, IMessageFilter
         Run("ls");
         sb.AppendLine("after ls: view=" + lv.View + " details=" + details + " btn=" + btnView.Text);
 
+        // ex：和 wt 一套目标解析，开的是资源管理器。XG_EX_DRY 只记一行、不真弹窗口
+        try
+        {
+            string dry = Path.Combine(Path.GetTempPath(), "xg-ex.txt");
+            string probe = Path.Combine(curPath, "__xg_ex_probe");
+            string keep = Environment.GetEnvironmentVariable("XG_EX_DRY");
+            try { File.Delete(dry); } catch { }
+            Environment.SetEnvironmentVariable("XG_EX_DRY", "1");
+            try
+            {
+                Directory.CreateDirectory(probe);
+                File.WriteAllText(Path.Combine(probe, "pick.txt"), "ex probe\r\n");
+                Run("ex");
+                sb.AppendLine("ex          -> " + LastLine(dry));
+                Run("ex __xg_ex_probe");
+                sb.AppendLine("ex dir      -> " + LastLine(dry));
+                Run("ex __xg_ex_probe\\pick.txt");
+                sb.AppendLine("ex file     -> " + LastLine(dry));
+                Run("ex -s __xg_ex_probe\\pick.txt");
+                sb.AppendLine("ex -s file  -> " + LastLine(dry));
+                Run("ex __xg_no_such_dir__");
+                sb.AppendLine("ex bogus    -> msg=" + lblStatus.Text.Trim() + "  (dry 没多记一行: " +
+                              LastLine(dry).StartsWith("/select,\"", StringComparison.Ordinal) + ")");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("XG_EX_DRY", keep);
+                try { if (Directory.Exists(probe)) Directory.Delete(probe, true); } catch { }
+                try { Populate(); } catch { }
+            }
+        }
+        catch (Exception ex) { sb.AppendLine("ex EXCEPTION " + ex.Message); }
+
         Run("sort size desc");
         sb.AppendLine("sort size desc: " + Head(4) + "   header=" + lv.Columns[3].Text);
         Run("sort name asc");
@@ -2556,6 +2670,7 @@ class Frm : Form, IMessageFilter
         sb.AppendLine("tab via KeyDown   -> '" + txtCmd.Text + "'");
         sb.AppendLine("compl 'mk'          -> '" + CompText("mk") + "'");
         sb.AppendLine("compl 'wt'          -> '" + CompText("wt") + "'");
+        sb.AppendLine("compl 'ex'          -> '" + CompText("ex") + "'");
         sb.AppendLine("compl 'cd ex'       -> '" + CompText("cd ex") + "'");
         sb.AppendLine("compl 'cd xs\\xg.e'  -> '" + CompText("cd xs\\xg.e") + "'");
         sb.AppendLine("compl 'cd 有'       -> '" + CompText("cd 有") + "'");

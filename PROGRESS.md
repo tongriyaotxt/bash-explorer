@@ -23,7 +23,8 @@
 
 - **列头排序**：点列头排序，再点反向；表头 `▲ / ▼`；目录恒在前，同组内反向。
   命令行 `sort name|date|type|size [asc|desc]`。排序不再重新枚举目录（只重排内存里的 items）。
-- **右键菜单**（深色）：打开 / 在此处打开终端（`wt -d`，回退 `cmd`）/ 在资源管理器中显示（`/select`）
+- **右键菜单**（深色）：打开 / 在此处打开终端（`wt -d`，回退 `cmd`）/ 在资源管理器中显示（`/select`，
+  与 `ex -s` 共用 `LaunchExplorer`）
   / 复制路径 / 重命名 / 移到回收站 / 永久删除 / 属性（`ShellExecuteEx` + `SEE_MASK_INVOKEIDLIST`）。
 - **工具条**：`← → ↑ ⟳` + 视图按钮（文字跟随当前视图）。
 - **面包屑**：路径按 `\` 拆成可点段；`::` / `shell:` 虚拟位置整体显示。
@@ -65,6 +66,11 @@
 - **`wt` 命令**（2026-10-24 补）：`wt [目录|文件] [命令…]` 在当前/指定目录开 Windows Terminal，
   别名 `term` / `terminal`；`LaunchTerminal(dir, run)` 与右键「在此处打开终端」共用一套（无 `wt` 回退
   `cmd /k cd /d`），`QArg` 统一加引号；`XG_WT_DRY=1` 干跑只把拼好的命令行写进 `%TEMP%\xg-wt.txt`。
+- **`ex` 命令**（2026-10-26 补）：`wt` 的镜像，开的是资源管理器。`ex [目录|文件]` 与 `ex -s 文件`
+  （`/select,` 直接选中）；别名 `explorer` / `exp`；目标解析与 `wt` 同源（无参=当前目录、目录=进去、
+  文件=所在目录、显示名=先查当前列表），`LaunchExplorer(dir, select)` 与右键「在资源管理器中显示」
+  共用一套（原来那段裸 `Process.Start("/select,")` 已合并）；`QArg` 加引号，`XG_EX_DRY=1` 干跑只写
+  `%TEMP%\xg-ex.txt`——自检里就是靠它验证五种拼法，不弹窗口。`help` 与 Tab 补全同步（`ex` / `explorer`）。
 
 ---
 

@@ -114,6 +114,9 @@ WinForms 图形界面：顶部面包屑 + 工具条 + 命令行（启动即聚�
 - `wt`（= `term` / `terminal`）在当前目录开 Windows Terminal：`wt` 就地开、`wt ..` 上一级、
   `wt D:\某目录 bash` 指定目录并直接跑命令、`wt 文件名` 落到文件所在目录；
   没有 `wt.exe` 回退 `cmd /k cd /d`，和右键菜单「在终端中打开」共用 `LaunchTerminal`
+- `ex`（= `explorer` / `exp`）是它的镜像，开的是资源管理器：`ex` 就地开、`ex ..` 上一级、
+  `ex D:\某目录` 指定目录、`ex 文件名` 落到文件所在目录、`ex -s 文件名` 进去并直接选中它；
+  和右键菜单「在资源管理器中显示」共用 `LaunchExplorer`，`XG_EX_DRY=1` 只记命令行不弹窗（自检用）
 - 键位照资源管理器：`Backspace` 后退、`Alt+←/→` 前进后退、`Alt+↑` 上一级、
   `Delete` 移到回收站、`Shift+Delete` 永久删除、`F2` 改名、`Alt+Enter` 属性
   （焦点在命令行、且命令行空着时，`Delete` / `F2` / `F4` / `F5` 同样作用于列表选中项）

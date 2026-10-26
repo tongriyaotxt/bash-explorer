@@ -113,7 +113,7 @@ xg --selftest D:\项目       跑一遍自检，结果写 %TEMP%\xg-selftest.txt
 
 ## 右键菜单
 
-`打开` · `在此处打开终端`（`wt -d`，没有 wt 回退 `cmd /k cd`）· `在资源管理器中显示`（`/select`）
+`打开` · `在此处打开终端`（`wt -d`，没有 wt 回退 `cmd /k cd`）· `在资源管理器中显示`（`/select`，和 `ex -s` 共用 `LaunchExplorer`）
 · `复制路径` · `重命名` · `移到回收站` · `永久删除` · `属性`。
 多选时只保留通用项；虚拟命名空间的项不能重命名、不能在资源管理器里定位。
 
@@ -176,7 +176,7 @@ xg --selftest D:\项目       跑一遍自检，结果写 %TEMP%\xg-selftest.txt
 | `clear` | ✅ | 清命令历史 |
 
 保留的 GUI 命令：`ic`（图标视图）`icon 48|96|144|256` `big` `sel 名字/*.md` `sort name|size [asc|desc]`
-`open` `wt [目录|文件] [命令…]` `info` `roots` `up` `back` `help` `exit`
+`open` `wt [目录|文件] [命令…]` `ex [-s] [目录|文件]` `info` `roots` `up` `back` `help` `exit`
 
 Windows 别名也认：`dir` `md` `del` `erase` `rd` `ren` `move` `copy` `type` `cls`。
 
@@ -198,6 +198,27 @@ wt D:\项目 bash            # 目录 + 想在里面跑的命令（目录后面�
 虚拟命名空间（此电脑 / 回收站 / `shell:`）没有文件系统路径，`wt` 直接拦下报「当前不是文件系统位置」。
 `-` 开头的词会被命令行当标志位吃掉，所以 wt 自己的参数（`-w` `-p` 那套）别在 xg 里写。
 干跑：设 `XG_WT_DRY=1` 时只把拼好的命令行追加到 `%TEMP%\xg-wt.txt`，不真的启终端（自检用）。
+
+### ex：在当前目录开资源管理器
+
+`wt` 的镜像——同一套目标解析，只是开出来的是资源管理器（`explorer.exe`）。
+
+```
+ex                            # xg 的当前目录
+ex .                          # 同上，写清楚点
+ex ..                         # 上一级
+ex D:\项目                    # 指定目录
+ex 某文件夹                   # 也认当前列表里的显示名
+ex C:\Windows\notepad.exe     # 给文件 → 在它所在目录开
+ex -s C:\Windows\notepad.exe  # 给文件 + -s → 进去并选中它
+```
+
+- 不带 `-s`：拼 `explorer.exe "<目录>"`；带 `-s`：拼 `/select,"<路径>"`（explorer 自己会开父目录并定位）
+- 进程工作目录一起设好；右键菜单「在资源管理器中显示」现在也走同一个 `LaunchExplorer(dir, select)`，
+  改一处两边都变（和 `wt` / `LaunchTerminal` 的关系一样）
+- 别名 `explorer` / `exp`（`ex` 是 `ex -s` 之外最省事的那一个）
+- 虚拟命名空间同样拦下报「当前不是文件系统位置」
+- 干跑：`XG_EX_DRY=1` 只把拼好的命令行追加到 `%TEMP%\xg-ex.txt`，不真弹窗口（自检靠它）
 
 `cd` 认四类目标：文件系统路径（含 `/`、`..`、`~`）、`::{GUID}`、**子项显示名**（`cd "OS (C:)"`）、`shell:` 前缀。
 
@@ -236,6 +257,9 @@ xs\xg.exe --selftest D:\某目录
 
 自检不依赖鼠标，按脚本跑一遍：明细 ↔ 图标切视图、三种排序、面包屑段、右键菜单项状态、
 文本预览、图片预览、命名空间根，最后自己关窗口。`build.ps1 -Test` 会自动跑它。
+
+`ex` 的自检走干跑（自检里临时设 `XG_EX_DRY=1`），把「无参 / 给目录 / 给文件 / `-s` / 不存在的目标」
+五种拼出来的命令行逐条写进结果，不真的弹资源管理器；结果里同时给出 `ex` 的补全和错误提示。
 
 崩溃会写 `%TEMP%\xg-crash.log`（`Application.ThreadException` + `AppDomain.UnhandledException`）。
 
