@@ -1,14 +1,16 @@
 # 进度存档 / 下次从这里接着 debug
 
-> 存档时间：2026-10-21 13:30 · 仓库：`tongriyaotxt/bash-explorer`（private，main）
-> 代码全在 `D:\项目\闲扯\explorer-bash`。本轮只改 `xs/xg.cs`、`xs/XG.md`、`build.ps1`（未提交）。
+> 存档时间：2026-10-26 23:20 · 仓库：`tongriyaotxt/bash-explorer`（private，main · HEAD `06d05cc`）
+> 代码全在 `D:\项目\闲扯\explorer-bash`。最近两轮只动 `xs/xg.cs` + 文档（`xs/XG.md`、`README.md`、本文件）；
+> `wt` / `ex` 都已提交并 push，`main` 与 `origin/main` 同步。
 
 ---
 
 ## 一句话现状
 
-四个工具都能跑；`xg` 这轮把「待打磨」里最挡手的几件事补完了：**排序 / 右键菜单 / 工具条 /
+四个工具都能跑；`xg` 前面几轮把「待打磨」里最挡手的几件事补完了：**排序 / 右键菜单 / 工具条 /
 面包屑 / 图标视图真缩略图 / 预览内存释放 / Shift+Delete**，并且有了不依赖鼠标的 `--selftest`。
+命令行里现在还能"从这里开出去"：`wt` 开 Windows Terminal、`ex` 开资源管理器（含 `-s` 直接定位）。
 
 | 工具 | 形态 | 状态 | 入口 |
 |---|---|---|---|
@@ -19,7 +21,36 @@
 
 ---
 
-## 这轮给 xg 补的
+## 2026-10-26 这轮：`ex` 命令（`wt` 的镜像，开资源管理器）
+
+**需求**：给 xg 加一个类似 `wt` 的命令，但开出来的是资源管理器；测试通过后 push。
+
+**做法**（`xs/xg.cs`，+116 行）：
+
+1. `OpenExplorerAt(a1, select)`：目标解析照抄 `OpenWt`——无参=当前目录、目录=进去、
+   文件=所在目录、显示名=先查 `FindItem`，找不到报「没有这个目录: …」。
+2. `LaunchExplorer(dir, select)`：无 `-s` 拼 `explorer.exe "<目录>"`；有 `-s` 拼
+   `/select,"<路径>"`；`WorkingDirectory` 一起设好；虚拟命名空间报「当前不是文件系统位置」。
+3. 右键「在资源管理器中显示」里那段裸 `Process.Start("/select,"…)` 合并进 `LaunchExplorer`
+   ——和 `wt` / `LaunchTerminal` 一个套路，改一处两边都变。
+4. `XG_EX_DRY=1` 干跑：只把拼好的命令行追加到 `%TEMP%\xg-ex.txt`，自检不弹窗口。
+5. 分发 `case "ex"/"explorer"/"exp"`；`-s` 复用既有 `flags` 集合（`flags.Contains('s')`）、
+   不占参数位（`ex -s 文件` 里 `-s` 被吃掉后 `args[0]` 才是文件）；`CmdNames` 加 `ex`/`explorer`；
+   `help` 文本同步。
+
+**验证**：
+
+- `build.ps1 -Test` 全绿：无 `EXCEPTION`、无崩溃日志；自检新增 6 行——`ex` / `ex dir` / `ex file` /
+  `ex -s file` / `ex bogus`（顺带断言"报错时不写 dry 日志"）/ `compl 'ex'`。
+- 真启动（不只干跑）：`xg --run "ex <临时目录>"` → `Shell.Application` 查到窗口落在该目录；
+  `xg --run "ex -s target.txt"` → 该窗口 `SelectedItems=[target.txt]`；与原生
+  `explorer.exe /select,` 对照一致。测完 `Quit()` 关窗 + 删临时目录，无残留窗口/进程。
+
+**提交**：`06d05cc feat(xg): ex command - open Explorer at the current directory`（已 push）
+
+---
+
+## xg 功能清单（2026-10-21 那轮为主，后续增补在条目里标日期）
 
 - **列头排序**：点列头排序，再点反向；表头 `▲ / ▼`；目录恒在前，同组内反向。
   命令行 `sort name|date|type|size [asc|desc]`。排序不再重新枚举目录（只重排内存里的 items）。
@@ -85,6 +116,10 @@
 4. **列头主题**：明细视图列头还是系统亮色，和深色主题不搭；要自绘 `NM_CUSTOMDRAW`。
 5. **xs**：TUI 里的选中项还没有"批量操作"（只有 cd/open）。
 6. 可选：图标视图的标签换行/双行省略；拖放（`IDropTarget`）；`Ctrl+C/Ctrl+V` 走 shell 剪贴板。
+7. **`ex` 的边角**：现在只吃第一个参数（多选/多目录不会一次开一堆）；右键菜单还缺
+   「**在此处**打开资源管理器」（现有的「在资源管理器中显示」是定位选中项，不是把当前目录开出来）。
+8. **补全前缀歧义**：`ex` 与 `explorer` 互为前缀，Tab 停在 `ex` 不动（和 `term`/`terminal` 同一个毛病）；
+   要么把 `explorer` 从候选里撤掉只留分发别名，要么改叫 `expl`。
 
 ---
 
@@ -100,6 +135,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Test
 # 直接跑
 xs\xg.exe "D:\某目录"
 xs\xg.exe --run "ic;sort size desc" "D:\某目录"
+xs\xg.exe --run "ex -s a.txt" "D:\某目录"      # 开资源管理器并选中 a.txt
 xs\xg.exe --selftest "D:\某目录"     # 结果在 %TEMP%\xg-selftest.txt
 xs\xs.exe -c "ls"
 ```
@@ -120,6 +156,8 @@ xs\xs.exe -c "ls"
 | 项目路径含中文 `D:\项目\闲扯` | `.cmd` 里不能写中文路径（会 ASCII 化），靠 `%LOCALAPPDATA%\xf\app` 这个 ASCII 联结绕开 |
 | Windows PowerShell 5.1 | `.ps1` 必须 UTF-8 **BOM**，否则按 GBK 解析报错 |
 | `git` 不在 PATH | 用 `C:\Program Files\Git\cmd\git.exe` |
+| `build.ps1` 会删旧 exe 再编 | 有 `xg.exe` 窗口在跑就报「输出被占用，先关掉正在运行的」；`Get-Process xg \| Stop-Process` 后再编 |
+| 远程是 `ssh.github.com:443` | push 前设 `GIT_SSH_COMMAND='ssh -o BatchMode=yes'`，否则可能卡在交互提示 |
 | UIA 报的坐标是**物理**像素，`GetWindowRect`（非 DPI 感知进程）是**虚拟**像素 | 写自动化/截图时别混用，差 1.5 倍 |
 | 抓图工具 | `D:\项目\闲扯\_shot\shot.exe <hwnd> <out.png>`：DPI 感知 + `PrintWindow`，**不抢焦点**（抢焦点会关掉右键菜单） |
 
@@ -141,6 +179,9 @@ xs\xs.exe -c "ls"
 | `xf.ps1` bash 会话 | 裸字节写 `BaseStream`；`Console.InputEncoding` 带 BOM 会污染 stdin |
 | `xc.ps1` | 只认锁定的 HWND，窗口关闭立刻报错，绝不换窗口 |
 | `xs.cs` TUI | `C_OFF` 必须 `ESC[0m`；控制键要走 `KeyChar` 回退分支 |
+| `xg.cs` `LaunchExplorer` | `explorer.exe /select,"路径"` 逗号后**不能有空格**；`QArg` 只负责加引号；`XG_EX_DRY` 只记一行不启动，自检靠它避免真弹窗 |
+| `xg.cs` `OpenWt` / `OpenExplorerAt` | 「从这里开出去」共用同一套目标判定顺序（文件系统路径 → 显示名 → 报错）；以后再加同类命令照抄这段，别再写第二份 |
+| 测试 `--run` | `--run` 的脚本必须是**一个** argv。`Start-Process -ArgumentList '--run','ex -s a.txt',dir` 会被拆成多个参数（`-s` 变成 xg 自己的参数，命令看着"没生效"）；要用 `ProcessStartInfo.Arguments = '--run "ex -s a.txt" "dir"'` |
 
 ---
 
