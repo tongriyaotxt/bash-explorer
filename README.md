@@ -9,7 +9,7 @@
 | **[xf](README.md#xf)** | 终端 | 选区 → bash | 资源管理器里选中，`@*` 一把交给 bash 处理 |
 | **[xc](XC.md)** | 资源管理器 | 命令 → 窗口 | 敲 `cd` / `ls` / `sel`，真资源管理器窗口跟着动 |
 | **[xs](XS.md)** | 终端 TUI | 命令 → ShellItem | 全屏字符界面，两行命令行 + 实时列表 |
-| **[xg](XG.md)** | 图形界面 | 命令 + 鼠标 | 图标列表 + 右侧预览窗格，像 Explorer 但能敲命令 |
+| **[xg](XG.md)** | 图形界面 | 直接输入 + 命令 + 鼠标 | 图标列表 + 直接输入搜索 + 右侧预览，像 Explorer 但能敲命令 |
 
 > 共同点：操作对象是 **ShellItem**，所以「此电脑」「回收站」「控制面板」和盘符、普通文件夹是同一类东西。
 
@@ -99,8 +99,14 @@ D:\项目\闲扯                    5 items [detail] · XS.md
 
 ## xg
 
-WinForms 图形界面：顶部面包屑 + 工具条 + 命令行（启动即聚焦），中间是资源管理器风格的图标/明细列表，右侧是预览窗格。
+WinForms 图形界面：顶部面包屑 + 工具条 + 命令行，中间是资源管理器风格的图标/明细列表，右侧是预览窗格。
+**打开后焦点在列表：直接打字就是搜索/选择**（Nautilus 式），要敲命令按 `Ctrl+L`。
 
+- **直接输入（学 Nautilus）**：打开就能打字。默认 `ta search` 把列表过滤成命中项（名字**包含**查询），
+  第一个自动选中；`ta select` 切到只选中前缀命中、不过滤；`Esc` 恢复完整列表，`Ctrl+F` 从任何地方回列表，
+  `Backspace` 有查询时删字符；查询显示在顶部命令行（`⌕`）
+- `Ctrl+L` 在任何焦点下回命令行（进入时自动退出搜索、恢复列表），空命令行有灰字提示；
+  命令行里 `Tab` 补全、`↑↓` 翻历史、`Esc`（空着）回列表
 - 图标用**系统图标列表**（`SHGetFileInfo` + `LVM_SETIMAGELIST`），和 Explorer 画的是同一套
 - 图标视图用 **`IShellItemImageFactory`** 出真缩略图（文本文件也有），尺寸四档
   48 / 96 / 144 / 256，`Ctrl+滚轮` 或 `icon 144` 切；明细视图点列头排序
@@ -117,10 +123,10 @@ WinForms 图形界面：顶部面包屑 + 工具条 + 命令行（启动即聚�
 - `ex`（= `explorer` / `exp`）是它的镜像，开的是资源管理器：`ex` 就地开、`ex ..` 上一级、
   `ex D:\某目录` 指定目录、`ex 文件名` 落到文件所在目录、`ex -s 文件名` 进去并直接选中它；
   和右键菜单「在资源管理器中显示」共用 `LaunchExplorer`，`XG_EX_DRY=1` 只记命令行不弹窗（自检用）
-- 键位照资源管理器：`Backspace` 后退、`Alt+←/→` 前进后退、`Alt+↑` 上一级、
+- 键位照资源管理器：`Backspace` 后退（有搜索前缀时先删字符）、`Alt+←/→` 前进后退、`Alt+↑` 上一级、
   `Delete` 移到回收站、`Shift+Delete` 永久删除、`F2` 改名、`Alt+Enter` 属性
   （焦点在命令行、且命令行空着时，`Delete` / `F2` / `F4` / `F5` 同样作用于列表选中项）
-- `sel *.md` / `sel pic.jpg` 按名字选中；命令行语法尽量按 Linux 来：
+- `sel *.md` / `sel pic.jpg` 按名字选中；`ta [search|select]` 切直接输入模式；命令行语法尽量按 Linux 来：
   `ls -t` `cd -` `cd ~` `mkdir -p` `rm -rf` `cp -r` `mv` `cat` `touch` `trash`（回收站），
   也认 `dir md del rd ren move copy type cls`
 - `xg --run "ic;sort size desc" D:\某目录` 打开后直接执行命令；
@@ -168,7 +174,9 @@ explorer-bash/
 │   ├── xg.cs / xg.exe      # 图形界面
 │   └── *.md
 ├── XC.md / XS.md / XG.md   # 各工具说明
-└── DESIGN.md               # 交互设计与成本分析
+├── xs/NAUTILUS.md           # Nautilus type-ahead 源码分析 + 借鉴清单
+├── PROGRESS.md              # 进度存档 / 下次接着 debug
+└── DESIGN.md                # 交互设计与成本分析
 ```
 
 ---

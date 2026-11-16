@@ -4,7 +4,7 @@
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ D:\ › 项目 › 闲扯 › explorer-bash › xs                       ← 面包屑，可点   │
 │ ←  →  ↑ │ ⟳  明细                                            ← 工具条        │
-│ ❯ cd ..                                                      ← 命令行（启动即聚焦）
+│ ❯ cd ..                                                      ← 命令行（Ctrl+L 聚焦）
 ├───────────────────────────────────────────────────────────────┬──────────────┤
 │ 名称 ▲           │ 修改日期         │ 类型            │ 大小 │  xg.cmd      │
 │ 📄 xg.cmd        │ 2026-10-19 23:12 │ Windows 命令脚本 │ 295 B│  D:\…\xg.cmd │
@@ -33,7 +33,7 @@ xg --selftest D:\项目       跑一遍自检，结果写 %TEMP%\xg-selftest.txt
 
 在任意目录敲 `xg` 就行（入口已装到 PATH）。
 
-**打开后命令行就是焦点**，直接打字即可：
+**打开后焦点在文件列表**：直接打字就是「输入选择」（见下一节）；要打命令按 `Ctrl+L`。
 
 ```
 ❯ ls -t                 明细 + 按时间排序
@@ -46,7 +46,7 @@ xg --selftest D:\项目       跑一遍自检，结果写 %TEMP%\xg-selftest.txt
 ❯ open readme.txt       用默认程序打开
 ```
 
-在列表里直接敲字母也会跳到命令行并接着输入——不用先点输入框。
+在列表里直接敲字母/数字 = 前缀选择文件，不会再跳到命令行；命令行按 `Ctrl+L` 进。
 
 ---
 
@@ -54,25 +54,65 @@ xg --selftest D:\项目       跑一遍自检，结果写 %TEMP%\xg-selftest.txt
 
 | 键 | 作用 |
 |---|---|
+| 字母/数字 | **直接输入**：search 过滤列表 / select 前缀选中（`ta` 切换） |
 | `Enter` | 打开 / 进入目录 |
-| `Backspace` | 后退（和资源管理器一致） |
+| `Backspace` | 输入选择时删一个前缀字符；没有前缀时后退 |
+| `Esc` | 取消输入选择；命令行空着时回列表 |
+| `Ctrl+L` | 回命令行（窗口里任何焦点都行：列表 / 工具条 / 面包屑 / 预览） |
+| `Ctrl+F` | 回列表，继续输入搜索 |
 | `Alt+←` / `Alt+→` | 后退 / 前进 |
 | `Alt+↑` | 上一级 |
 | `Delete` | **移到回收站**（带确认，只删选中的；绝不兼任"返回"） |
 | `Shift+Delete` | **永久删除**（二次确认，不进回收站） |
 | `Alt+Enter` | 属性对话框（走 `ShellExecuteEx` + `properties`） |
 | `F2` / `F4` / `F5` | 改名 / 切视图 / 刷新（焦点在命令行、且命令行空着时也生效） |
-| `Ctrl+滚轮` | 图标视图缩放（48 → 96 → 144 → 256） |
-| 滚轮 / `PgUp` `PgDn` | 列表滚动（焦点在命令行时也生效——滚轮按鼠标位置转发给列表） |
-| `F2` | 重命名 |
-| `F5` | 刷新 |
-| `F4` | 明细 ↔ 图标视图 |
 | `Ctrl+A` | 全选 |
 | `Ctrl+Shift+C` | 复制选中项路径 |
-| `Tab` | 补全（命令名 / 路径 / 子目录）；多候选循环，`Shift+Tab` 反向 |
-| 字母/数字 | 焦点跳到命令行并接着输入 |
+| `Ctrl+滚轮` | 图标视图缩放（48 → 96 → 144 → 256） |
+| 滚轮 / `PgUp` `PgDn` | 列表滚动（焦点在命令行时也生效——滚轮按鼠标位置转发给列表） |
+| `Tab` | 命令行里补全（命令名 / 路径 / 子目录）；多候选循环，`Shift+Tab` 反向 |
 
 命令行里：`Backspace` **只删字符**，`Alt+↑` 才是上一级，`Tab` 补全，`↑↓` 翻历史。
+
+---
+
+## 直接输入（学 Nautilus：search / select 两条路）
+
+Nautilus 源码里其实是两套行为，由一个开关 `org.gnome.nautilus.preferences type-ahead-search` 决定：
+
+- **默认（true）= search**：打字 → `nautilus_window_slot_handle_event` 把键转给查询框 →
+  `query_editor_changed_callback` 里 `set_search_visible(TRUE)` + `set_search_query`，
+  视图切成搜索结果（**列表只剩命中项**）。
+- **补丁（false）= type-ahead select**：同一个回调走 else 分支，对当前目录做**大小写不敏感的
+  前缀匹配**，按当前排序取第一个，`nautilus_files_view_set_selection(first)`，**只选中、不过滤**；
+  1000ms 没有新输入就清空查询（`CLEAR_QUERY_EDITOR_TIMEOUT`）。
+
+xg 两条都实现了，默认跟 Nautilus 一致走 **search**，`ta select` 切到补丁语义：
+
+```
+ta           看当前模式
+ta search    输入即过滤列表（默认，Nautilus 上游）
+ta select    只选中第一个命中，列表不动（Nautilus type-ahead 补丁）
+```
+
+共同点：
+
+- **打开窗口就能用**：焦点在列表，直接敲 `al`，不用先点列表。
+- 查询显示在**顶部命令行**（提示符 `⌕`）；命令行里已有半条命令时，改用列表左下角的小药丸，绝不覆盖正在写的命令。
+- `Ctrl+L` 在**整个窗口**任何焦点下都能回命令行（`ProcessCmdKey` 接的，不只是列表）；进入命令行会**退出搜索、恢复完整列表**，
+  避免命令行背后压着一个 0 命中的过滤。空命令行显示灰字「Ctrl+L 输入命令 · Esc 回列表搜索」，聚焦后消失。
+- 回搜索：命令行空着按 `Esc`（有字先清字），或任何地方按 `Ctrl+F`；焦点回列表后直接打字就是搜索。
+  命令行里 `Tab` 补全、`↑↓` 翻历史。
+- **search**：当前目录、名字**包含**查询（子串，不区分大小写），列表只剩命中项，第一个自动选中；
+  `Esc` 恢复完整列表，`Backspace` 删字符，`Enter` 打开。**不递归、不落盘**（Nautilus 会递归搜索，见 `NAUTILUS.md`）。
+- **select**：前缀匹配，按当前排序取第一个，不重排、不过滤；1 秒没新输入自动清空前缀。
+- `Space` 不参与查询（Nautilus 的 `nautilus_query_editor_handle_event` 明确把 Space / Menu / keynav 放回视图）。
+- `Backspace` 有前缀时删一个字符；没有前缀时才是「后退」。上游 Nautilus 在 type-ahead 下把 `Backspace` 绑成「上一级」，
+  xg 改成编辑前缀，更好用。
+- 中文也能匹配：输入法上屏的字符走 `WM_CHAR`，`中文` → `中文条目.txt`。英文前缀建议先 `Shift` 切英文，否则字母会被输入法组词吃掉。
+- 连续输入就是延长查询，不循环同前缀项；要换下一个，改查询或等超时（select 模式）。
+- 实现：`IconList.WndProc` 截 `WM_CHAR`（原生 ListView 自己也会做前缀查找，必须抢在它前面），
+  `TypeAheadChar` / `ApplyTypeAhead` 负责匹配；search 用 `allItems` 备份 + `items` 过滤，`TypeAheadReset` 恢复。
 
 ---
 
@@ -175,7 +215,7 @@ xg --selftest D:\项目       跑一遍自检，结果写 %TEMP%\xg-selftest.txt
 | `trash 目标…` | — | 走回收站（等于 GUI 的 `Delete`） |
 | `clear` | ✅ | 清命令历史 |
 
-保留的 GUI 命令：`ic`（图标视图）`icon 48|96|144|256` `big` `sel 名字/*.md` `sort name|size [asc|desc]`
+保留的 GUI 命令：`ic`（图标视图）`icon 48|96|144|256` `big` `ta [search|select]` `sel 名字/*.md` `sort name|size [asc|desc]`
 `open` `wt [目录|文件] [命令…]` `ex [-s] [目录|文件]` `info` `roots` `up` `back` `help` `exit`
 
 Windows 别名也认：`dir` `md` `del` `erase` `rd` `ren` `move` `copy` `type` `cls`。
@@ -256,7 +296,12 @@ xs\xg.exe --selftest D:\某目录
 ```
 
 自检不依赖鼠标，按脚本跑一遍：明细 ↔ 图标切视图、三种排序、面包屑段、右键菜单项状态、
-文本预览、图片预览、命名空间根，最后自己关窗口。`build.ps1 -Test` 会自动跑它。
+文本预览、图片预览、命名空间根，最后自己关窗口。`build.ps1 -Test` 会自动跑它；
+结果里出现 `EXCEPTION` 或 `FAIL` 都直接让构建失败。
+
+type-ahead 的自检是真建一个 `__xg_ta` 目录，按 `a → al → alp → alpi`、Backspace、中文、
+1 秒超时、`Ctrl+L` / `Esc` 焦点、换目录清前缀逐条断言；另外用 `WM_CHAR` 直接打给
+ListView，验的是"消息真的走到 `IconList.WndProc`"这条路径，不是只调内部函数。
 
 `ex` 的自检走干跑（自检里临时设 `XG_EX_DRY=1`），把「无参 / 给目录 / 给文件 / `-s` / 不存在的目标」
 五种拼出来的命令行逐条写进结果，不真的弹资源管理器；结果里同时给出 `ex` 的补全和错误提示。
@@ -288,6 +333,16 @@ xs\xg.exe --selftest D:\某目录
 8. **中文输入法组合状态会吃掉 `Tab` 和 `Enter`**。调试时一度以为"回车没反应"，
    其实是 MS 拼音的候选窗在等上屏（`ImmAssociateContext` 对 TSF 输入法无效）。
    Windows Terminal 同样如此，不是程序 bug——`Ctrl+Space` 切英文即可。
+9. **ListView 会自己吞 `WM_CHAR` 做前缀查找，`KeyPress` 根本不触发**。
+   现象：状态栏没有任何提示、浮层不出现，但选中项确实跳到了 `alpha.txt`——原生
+   ListView 干的。修法：在 `IconList.WndProc` 里先截 `WM_CHAR`，命中就 `return`，
+   顺带把原生那套前缀查找关掉，避免两套各选各的。
+10. **`SendMessage` 默认走 A 版，中文 `WM_CHAR` 会被按 ANSI 代码页解释而丢掉**。
+    自检里发 `0x4E2D`（中）时 `TypeAheadChar` 收不到；`DllImport` 加
+    `CharSet = CharSet.Unicode` 走 `SendMessageW` 才对。真实键盘输入同样是 UTF-16。
+11. **默认焦点决定了"像不像 Nautilus"**。原来 `Shown` 里 `txtCmd.Focus()`，用户打开
+    就打字只会得到 `未知命令: alpha`；改成 `FocusList()`，命令行用 `Ctrl+L` 进，
+    `Esc`（命令行空着）回列表，两边能来回。
 
 ---
 

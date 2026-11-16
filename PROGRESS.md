@@ -21,6 +21,36 @@
 
 ---
 
+## 2026-11-16 这轮：直接输入（Nautilus type-ahead / search）
+
+**需求**：学 Nautilus 的「直接输入选中文件」，并看看它还有什么值得搬。
+
+**做法**（`xs/xg.cs`）：
+
+1. `IconList.WndProc` 截 `WM_CHAR`：原生 ListView 自己会做前缀查找，`KeyPress` 不触发；截住后 type-ahead 独占输入。
+2. 两条路，`ta search|select` 切换，默认 `search`（对齐 Nautilus 上游）：
+   - `search`：`allItems` 全量 + `items` 过滤（名字包含查询），列表只剩命中，第一个选中，`Esc` 恢复；
+   - `select`：前缀匹配、只选中不过滤、1 秒清空（社区 type-ahead 补丁）。
+3. 查询显示在顶部命令行（`⌕`），命令行有内容时退回左下角药丸；`Ctrl+L` 全窗口可用、进入命令行会退出搜索并恢复列表；`Esc` / `Ctrl+F` 回列表继续输入；空命令行用 `EM_SETCUEBANNER` 显示灰字提示。
+4. 打开窗口默认焦点改到列表（原来在命令行，打字会得到 `未知命令`）。
+5. 空格不参与查询（Nautilus `query_editor_handle_event` 的 keynav 规则）；`Backspace` 有前缀删字符，没前缀才后退。
+6. `SendMessage` 加 `CharSet.Unicode`：A 版会把中文 `WM_CHAR` 按 ANSI 丢掉（自检抓到）。
+
+**自检**（`build.ps1 -Test`，`FAIL` 也会让构建失败）：
+
+- `a → al → alp → alpi`、Backspace、中文、1 秒超时、`ta select/search` 条数差异、`Ctrl+L`/`Esc`、换目录清前缀；
+- `WM_CHAR` 直投 ListView，验消息真的走到 `IconList.WndProc`；
+- 截图：`_shot/xg-typeahead-search.png`（search 过滤）、`_shot/xg-typeahead.png`（select + 镜像/药丸）。
+
+**坑**：
+
+- ListView 吞 `WM_CHAR`，`KeyPress` 根本不触发；
+- `SendMessage` 默认 A 版，中文 `WM_CHAR` 丢失；
+- `Shown` 里 `txtCmd.Focus()` 是「不像 Nautilus」的根因，改成 `FocusList()`。
+
+**下一步**：Nautilus 借鉴清单见 `xs/NAUTILUS.md`（P0 批量重命名 / Select Matching / Copy to / 隐藏文件；P1 操作队列 / 标签页 / 压缩 / 空格预览）。
+
+---
 ## 2026-10-26 这轮：`ex` 命令（`wt` 的镜像，开资源管理器）
 
 **需求**：给 xg 加一个类似 `wt` 的命令，但开出来的是资源管理器；测试通过后 push。

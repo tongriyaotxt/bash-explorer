@@ -106,8 +106,14 @@ static class Xg
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
 
-    [DllImport("user32.dll")]
+    // 显式走 SendMessageW：WM_CHAR 的 wParam 是 UTF-16 字符，A 版会按 ANSI 代码页
+    // 解释（中文 0x4E2D 直接丢），自检里用 WM_CHAR 模拟中文输入会失败。
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    // 字符串版：EM_SETCUEBANNER（命令行空着时的灰字提示）
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW")]
+    public static extern IntPtr SendMessageStr(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern bool DestroyIcon(IntPtr hIcon);
@@ -465,6 +471,7 @@ class Frm : Form, IMessageFilter
     readonly FlowLayoutPanel tools = new FlowLayoutPanel();
     readonly Panel pnlCmd = new Panel();
     readonly CmdBox txtCmd = new CmdBox();
+    readonly Label lblPrompt = new Label();
     readonly Label lblStatus = new Label();
 
     // ---- listing + preview
@@ -502,6 +509,20 @@ class Frm : Form, IMessageFilter
     static readonly int[] IconSteps = { 48, 96, 144, 256 };
     int iconPx = 96;
 
+    // ---- 直接输入选择（type-ahead，仿 Nautilus 的 type-ahead 补丁）
+    // 缓冲区只用来找前缀，不进命令行、不重排列表；1 秒没新输入就清空。
+    readonly StringBuilder taBuf = new StringBuilder();
+    readonly Timer taTimer = new Timer();       // 1000ms 后清空缓冲区并收起浮层
+    readonly Timer taPreview = new Timer();     // 连续输入时推迟预览，避免每敲一个字都去取缩略图
+    Label lblTypeAhead;
+    bool taMirror;                              // 前缀是否正显示在顶部命令行里（Nautilus 式）
+    // Nautilus 有两条路：
+    //   search = 打字过滤列表（上游默认，nautilus-window-slot.c 里 set_search_visible(TRUE)）
+    //   select = 只选中第一个命中项，不过滤（社区 type-ahead 补丁）
+    bool taSearch = true;
+    bool filtering;                             // 当前列表是否是过滤后的结果
+    List<Xg.Item> allItems = new List<Xg.Item>();
+
     public Frm(string start)
     {
         Text = "xg · Shell namespace";
@@ -536,11 +557,18 @@ class Frm : Form, IMessageFilter
         split.BackColor = Color.FromArgb(60, 60, 60);
         split.SplitterWidth = 1;
         split.Panel1.Controls.Add(lv);
+        split.Panel1.Controls.Add(lblTypeAhead = BuildTypeAhead());
         split.Panel2.Controls.Add(lblPreview);
         split.Panel2.Controls.Add(pic);
         split.Panel2.BackColor = Color.FromArgb(26, 26, 26);
         lv.Zoom = ZoomIcons;
         split.Panel2.Resize += delegate { FitPreviewBox(); };
+        split.Panel1.Resize += delegate { PositionTypeAhead(); };
+
+        taTimer.Interval = 1000;                                  // Nautilus 补丁同款：1 秒清前缀
+        taTimer.Tick += delegate { TypeAheadReset(true); };
+        taPreview.Interval = 220;                                 // 打字停下 220ms 再取缩略图
+        taPreview.Tick += delegate { taPreview.Stop(); RenderPreview(); };
         split.MouseUp += delegate { if (pic.Visible) RenderPreview(); };   // 拖完分隔条重新取大图
 
         // docking：后加的 Top 更靠上 → 顺序为 列表/状态/命令行/工具条/路径
@@ -551,6 +579,8 @@ class Frm : Form, IMessageFilter
         Controls.Add(pnlPath);
 
         txtCmd.KeyDown += CmdKeyDown;
+        // 点进命令行时，顶部那段 type-ahead 前缀要清掉，别把它当命令
+        txtCmd.Enter += delegate { if (taMirror) EndTypeAheadMirror(); };
         // Tab 的官方姿势：PreviewKeyDown 里认成输入键，否则会被当成对话框导航
         txtCmd.PreviewKeyDown += delegate(object s, PreviewKeyDownEventArgs e)
         {
@@ -564,7 +594,21 @@ class Frm : Form, IMessageFilter
         };
         lv.DoubleClick += delegate { OpenSelected(); };
         lv.KeyDown += LvKeyDown;
-        lv.SelectedIndexChanged += delegate { UpdateStatus(); RenderPreview(); };
+        // ListView 自己会吞 WM_CHAR 做原生前缀查找，KeyPress 根本轮不到（实测：状态栏没提示、
+        // 浮层不出现，但选中项确实跳了）。所以在 IconList.WndProc 里截住字符，顺带把原生那套关掉。
+        lv.TypeChar = delegate(char c)
+        {
+            if ((Control.ModifierKeys & (Keys.Control | Keys.Alt)) != 0) return false;
+            return TypeAheadChar(c);
+        };
+        lv.SelectedIndexChanged += delegate
+        {
+            UpdateStatus();
+            // 输入选择期间先不取缩略图：每敲一个字都同步取图会让打字变卡，
+            // 停手 220ms 再渲染一次（预览仍然会跟上，只是晚一点）。
+            if (taBuf.Length > 0) { taPreview.Stop(); taPreview.Start(); }
+            else RenderPreview();
+        };
         lv.Resize += delegate { FitColumns(); };
         lv.SizeChanged += delegate { FitColumns(); };
         lv.ColumnClick += ColumnClick;
@@ -575,8 +619,17 @@ class Frm : Form, IMessageFilter
         {
             try { split.SplitterDistance = Math.Max(320, split.Width - (int)(380 * sc)); } catch { }
             FitColumns();
-            txtCmd.Focus();
-            ActiveControl = txtCmd;
+            // Nautilus 式：打开窗口，焦点就在文件列表 → 直接打字就是"输入选择"。
+            // 命令行不再抢默认焦点，Ctrl+L（或点命令行）随时回去。
+            FocusList();
+            Msg("直接输入选择文件 · Ctrl+L 输入命令 · 点列头排序 · F4 切视图");
+            // 命令行空着时用 Edit 原生的 cue banner 提示怎么进来（聚焦后自动消失）
+            try
+            {
+                Xg.SendMessageStr(txtCmd.Handle, 0x1501 /*EM_SETCUEBANNER*/,
+                                  IntPtr.Zero, "Ctrl+L 输入命令 · Esc 回列表搜索");
+            }
+            catch { }
             try
             {
                 string d = "form=" + ClientSize.Width + "x" + ClientSize.Height +
@@ -588,8 +641,8 @@ class Frm : Form, IMessageFilter
             }
             catch { }
         };
-        Activated += delegate { if (!txtCmd.Focused && lv.Focused != true) txtCmd.Focus(); };
-        FormClosed += delegate { DisposePreviewImage(); ClearBigImages(); };
+        Activated += delegate { if (!txtCmd.Focused && lv.Focused != true) FocusList(); };
+        FormClosed += delegate { taTimer.Stop(); taPreview.Stop(); DisposePreviewImage(); ClearBigImages(); };
 
         LoadFolder(start);
         lv.HandleCreated += delegate { AttachImageLists(); };
@@ -697,7 +750,6 @@ class Frm : Form, IMessageFilter
         txtCmd.ForeColor = Color.FromArgb(235, 235, 235);
         txtCmd.Font = new Font("Consolas", 11f * scale);
 
-        var lblPrompt = new Label();
         lblPrompt.Text = "❯";
         lblPrompt.Dock = DockStyle.Left;
         lblPrompt.Width = (int)(26 * scale);
@@ -746,6 +798,72 @@ class Frm : Form, IMessageFilter
         lblPreview.Padding = new Padding(10, 10, 10, 10);
         lblPreview.TextAlign = ContentAlignment.TopLeft;
         lblPreview.AutoEllipsis = true;
+    }
+
+    // 输入选择浮层：列表左下角一个小药丸，显示当前前缀和命中数。
+    // Nautilus 用工具栏的查询框显示这段文字，xg 不抢命令行，单独放一块。
+    Label BuildTypeAhead()
+    {
+        var l = new Label();
+        l.AutoSize = true;
+        l.Visible = false;
+        l.BackColor = Color.FromArgb(52, 52, 52);
+        l.ForeColor = Color.FromArgb(130, 225, 255);
+        l.Font = new Font("Consolas", 11f * scale, FontStyle.Bold);
+        l.Padding = new Padding((int)(10 * scale), (int)(5 * scale), (int)(10 * scale), (int)(5 * scale));
+        l.TextAlign = ContentAlignment.MiddleLeft;
+        l.Paint += delegate(object s, PaintEventArgs e)
+        {
+            using (var pen = new Pen(Color.FromArgb(90, 200, 240)))
+                e.Graphics.DrawRectangle(pen, 0, 0, l.Width - 1, l.Height - 1);
+        };
+        return l;
+    }
+
+    void PositionTypeAhead()
+    {
+        if (lblTypeAhead == null || lblTypeAhead.Parent == null) return;
+        Control host = lblTypeAhead.Parent;
+        int x = (int)(16 * scale);
+        int y = host.ClientSize.Height - lblTypeAhead.Height - (int)(16 * scale);
+        if (y < 0) y = 0;
+        lblTypeAhead.Location = new Point(x, y);
+        lblTypeAhead.BringToFront();
+    }
+
+    void ShowTypeAhead(string prefix, int hits)
+    {
+        if (lblTypeAhead == null) return;
+        // 命令行空着 → 直接把前缀显示在顶部（Nautilus 就是在输入条里显示）；
+        // 命令行已经有半条命令 → 不动它，用列表左下角的小药丸显示前缀。
+        if (prefix.Length > 0 && (txtCmd.TextLength == 0 || taMirror))
+        {
+            taMirror = true;
+            compBusy = true;
+            txtCmd.Text = prefix;
+            txtCmd.SelectionStart = txtCmd.TextLength;
+            compBusy = false;
+            txtCmd.ForeColor = Color.FromArgb(150, 220, 255);
+            lblPrompt.Text = "⌕";
+            lblTypeAhead.Visible = false;
+            return;
+        }
+        string hint = prefix.Length == 0 ? "" : (hits > 0 ? "  " + hits + " 项" : "  无匹配");
+        lblTypeAhead.Text = "❯ " + prefix + hint;
+        lblTypeAhead.Visible = prefix.Length > 0;
+        PositionTypeAhead();
+    }
+
+    // 退出"前缀显示在命令行"的状态：清掉那段文字，提示符换回 ❯
+    void EndTypeAheadMirror()
+    {
+        if (!taMirror) return;
+        taMirror = false;
+        compBusy = true;
+        txtCmd.Clear();
+        compBusy = false;
+        txtCmd.ForeColor = Color.FromArgb(235, 235, 235);
+        lblPrompt.Text = "❯";
     }
 
     // 预览图区：吃满右栏高度（下方留出信息文本的位置），窗口/分隔条变大它就变大
@@ -819,8 +937,17 @@ class Frm : Form, IMessageFilter
 
     void FocusList()
     {
-        if (lv.Items.Count > 0) lv.Focus();
+        // 搜索 0 命中时 lv.Items 是空的，但焦点仍该回列表（好继续改查询）
+        if (lv.Items.Count > 0 || filtering) lv.Focus();
         else txtCmd.Focus();
+    }
+
+    // Ctrl+L 回命令行；Ctrl+F 回列表继续输入搜索（Nautilus 的 Ctrl+F 也是搜索）
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == (Keys.Control | Keys.L)) { FocusCommand(); return true; }
+        if (keyData == (Keys.Control | Keys.F)) { FocusList(); return true; }
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
     // 焦点通常在命令行，滚轮本该滚列表，所以要自己转发（WM_MOUSEWHEEL 只发给焦点窗口）
@@ -1002,6 +1129,7 @@ class Frm : Form, IMessageFilter
     void ResortRows()
     {
         ApplySort(items);
+        if (filtering) ApplySort(allItems);   // 恢复列表时也按当前列头排序
         RenderRows();
     }
 
@@ -1088,7 +1216,12 @@ class Frm : Form, IMessageFilter
     void Populate()
     {
         rootsView = false;
-        items = ReadAll();
+        // 换目录/刷新后前缀和过滤都作废；allItems 是"当前目录的完整列表"，
+        // 过滤（ta search）只是把 items 指向它的一个子集。
+        taBuf.Clear(); taTimer.Stop(); EndTypeAheadMirror();
+        filtering = false;
+        allItems = ReadAll();
+        items = allItems;
         ApplySort(items);
         Text = curName + " — xg";
         UpdatePathBar();
@@ -1631,17 +1764,124 @@ class Frm : Form, IMessageFilter
         if (!Xg.ShellExecuteEx(ref sei)) Msg("无法打开属性对话框");
     }
 
+    // ---------------------------------------------------------------- 直接输入选择
+    // 语义照 Nautilus 的 type-ahead 补丁（nautilus-typeahead）：
+    //   · 前缀匹配（大小写不敏感），只选第一个命中项；不改排序、不切搜索视图
+    //   · 候选顺序 = 当前列表顺序（也就是当前排序）
+    //   · 1 秒没有新输入 → 清空前缀（对应补丁里的 CLEAR_QUERY_EDITOR_TIMEOUT = 1000）
+    //   · Backspace 删前缀，Esc 取消，Enter 打开（沿用列表的 Enter）
+    bool TypeAheadChar(char c)
+    {
+        if (char.IsControl(c)) return false;
+        // Nautilus 的 query_editor_handle_event 明确把 Space / Menu / keynav 放回视图，
+        // 不当作查询字符；空格留给列表（以后接空格预览也顺）
+        if (c == ' ') return false;
+        if (taBuf.Length >= 32) taBuf.Length = 0;
+        taBuf.Append(c);
+        if (!taSearch) { taTimer.Stop(); taTimer.Start(); }   // 只有 select 模式才 1 秒清空
+        ApplyTypeAhead();
+        return true;
+    }
+
+    bool TypeAheadBackspace()
+    {
+        if (taBuf.Length == 0) return false;
+        taBuf.Length--;
+        if (taBuf.Length == 0) { TypeAheadReset(true); return true; }
+        if (!taSearch) { taTimer.Stop(); taTimer.Start(); }
+        ApplyTypeAhead();
+        return true;
+    }
+
+    void ApplyTypeAhead()
+    {
+        string p = taBuf.ToString();
+
+        // search 模式：把当前目录的完整列表按"名字包含查询"过滤，列表只剩命中项
+        // （Nautilus 上游 search；这里先做当前目录，递归搜索留给以后）
+        if (taSearch)
+        {
+            var hits = new List<Xg.Item>();
+            foreach (var it in allItems)
+            {
+                if (it == null || it.Name == null) continue;
+                if (p.Length == 0 || it.Name.IndexOf(p, StringComparison.CurrentCultureIgnoreCase) >= 0)
+                    hits.Add(it);
+            }
+            ApplySort(hits);
+            items = hits;
+            filtering = true;
+            RenderRows();
+            if (hits.Count > 0) SelectOnly(0);
+            ShowTypeAhead(p, hits.Count);
+            Msg("搜索：" + p + "   ·   " + (hits.Count == 0 ? "没有匹配（Backspace 删字符 · Esc 恢复）"
+                                                           : hits.Count + " 项 · Enter 打开 · Esc 恢复列表"));
+            return;
+        }
+
+        // select 模式：只在当前列表里找前缀，选第一个，不重排、不过滤
+        int first = -1, n = 0;
+        for (int i = 0; i < lv.Items.Count; i++)
+        {
+            string name = lv.Items[i].Text;
+            if (name != null && name.StartsWith(p, StringComparison.CurrentCultureIgnoreCase))
+            {
+                if (first < 0) first = i;
+                n++;
+            }
+        }
+        if (first >= 0) SelectOnly(first);
+        ShowTypeAhead(p, n);
+        Msg("输入选择：" + p + "   ·   " +
+            (n == 0
+                ? "无匹配（Backspace 删一个字符）"
+                : "命中 " + n + " 项 · 继续输入缩小范围 · Enter 打开 · Esc 取消"));
+    }
+
+    void TypeAheadReset(bool restoreStatus)
+    {
+        taBuf.Length = 0;
+        taTimer.Stop();
+        EndTypeAheadMirror();
+        if (filtering)
+        {
+            filtering = false;
+            items = allItems;
+            ApplySort(items);
+            RenderRows();
+        }
+        if (lblTypeAhead != null) lblTypeAhead.Visible = false;
+        if (restoreStatus) UpdateStatus();
+    }
+
+    // 列表里不再"敲字母就跳命令行"：要打命令按 Ctrl+L（和 Nautilus 的 Ctrl+L 一个意思）
+    // 进命令行 = 退出搜索：清前缀、恢复完整列表，避免"命令行里还压着一个 0 命中的过滤"
+    void FocusCommand()
+    {
+        TypeAheadReset(true);
+        txtCmd.Focus();
+        txtCmd.SelectAll();
+    }
+
     void LvKeyDown(object sender, KeyEventArgs e)
     {
         if (e.KeyCode == Keys.Delete) { DeleteSelected(e.Shift); e.Handled = true; return; }
         if (e.KeyCode == Keys.Enter)
         {
             if (e.Alt) { ShowProperties(); e.Handled = true; return; }
-            OpenSelected(); e.Handled = true; return;
+            // 先打开当前选中的命中项，再收掉搜索/前缀；反过来会先还原列表、选中项跑掉
+            OpenSelected();
+            TypeAheadReset(true);
+            e.Handled = true; return;
         }
 
         // Explorer 的键位：Backspace / Alt+← 后退，Alt+→ 前进，Alt+↑ 上一级
-        if (e.KeyCode == Keys.Back && e.Modifiers == Keys.None) { GoBack(); e.Handled = true; return; }
+        // 输入选择进行中时，Backspace 先吃掉一个前缀字符；前缀空了才后退
+        if (e.KeyCode == Keys.Back)
+        {
+            if (TypeAheadBackspace()) { e.Handled = true; e.SuppressKeyPress = true; return; }
+            if (e.Modifiers == Keys.None) { GoBack(); e.Handled = true; return; }
+        }
         if (e.KeyCode == Keys.Left && e.Modifiers == Keys.Alt) { GoBack(); e.Handled = true; return; }
         if (e.KeyCode == Keys.Right && e.Modifiers == Keys.Alt) { GoForward(); e.Handled = true; return; }
         if (e.KeyCode == Keys.Up && e.Modifiers == Keys.Alt) { GoUp(); e.Handled = true; return; }
@@ -1652,19 +1892,20 @@ class Frm : Form, IMessageFilter
         if (e.KeyCode == Keys.A && e.Control) { foreach (ListViewItem r in lv.Items) r.Selected = true; e.Handled = true; return; }
         if (e.KeyCode == Keys.C && e.Control && e.Shift) { CopyPaths(); e.Handled = true; return; }
 
-        // 在列表里直接敲字：把焦点交给命令行并把字符接上去
-        if ((e.KeyCode >= Keys.A && e.KeyCode <= Keys.Z && e.Modifiers == Keys.None) ||
-            (e.KeyCode >= Keys.D0 && e.KeyCode <= Keys.D9 && e.Modifiers == Keys.None) ||
-            (e.KeyCode >= Keys.NumPad0 && e.KeyCode <= Keys.NumPad9 && e.Modifiers == Keys.None))
+        // Ctrl+L：回命令行（列表里现在用字母做输入选择，命令行走这个口）
+        if (e.KeyCode == Keys.L && e.Control) { FocusCommand(); e.Handled = true; return; }
+
+        // Esc：先取消输入选择；没有前缀时把焦点交回命令行
+        if (e.KeyCode == Keys.Escape)
         {
-            txtCmd.Focus();
-            string ch;
-            if (e.KeyCode >= Keys.A && e.KeyCode <= Keys.Z) ch = ((char)('a' + (e.KeyCode - Keys.A))).ToString();
-            else if (e.KeyCode >= Keys.D0 && e.KeyCode <= Keys.D9) ch = ((char)('0' + (e.KeyCode - Keys.D0))).ToString();
-            else ch = ((char)('0' + (e.KeyCode - Keys.NumPad0))).ToString();
-            txtCmd.Text += ch;
-            txtCmd.SelectionStart = txtCmd.TextLength;
-            e.Handled = true;
+            if (taBuf.Length > 0) TypeAheadReset(true); else FocusCommand();
+            e.Handled = true; return;
+        }
+
+        // 上下键：输入选择期间先清掉前缀，免得"看着是筛选、实际是移动"两套状态打架
+        if (e.KeyCode == Keys.Up || e.KeyCode == Keys.Down || e.KeyCode == Keys.PageUp || e.KeyCode == Keys.PageDown)
+        {
+            if (taBuf.Length > 0) TypeAheadReset(true);
         }
     }
 
@@ -1797,6 +2038,14 @@ class Frm : Form, IMessageFilter
     // ---------------------------------------------------------------- command line
     void CmdKeyDown(object sender, KeyEventArgs e)
     {
+        // 顶部那段是 type-ahead 前缀（不是命令）：Enter 不能拿去执行
+        if (taMirror)
+        {
+            EndTypeAheadMirror();
+            FocusList();
+            e.Handled = true; e.SuppressKeyPress = true;
+            return;
+        }
         if (e.KeyCode == Keys.Enter)
         {
             string line = txtCmd.Text.Trim();
@@ -1809,7 +2058,13 @@ class Frm : Form, IMessageFilter
             return;
         }
         if (e.KeyCode == Keys.Tab) { Complete(e.Shift); e.Handled = true; e.SuppressKeyPress = true; return; }
-        if (e.KeyCode == Keys.Escape) { txtCmd.Clear(); e.Handled = true; return; }
+        if (e.KeyCode == Keys.L && e.Control) { txtCmd.SelectAll(); e.Handled = true; e.SuppressKeyPress = true; return; }
+        if (e.KeyCode == Keys.Escape)
+        {
+            // 命令行空白时 Esc 回到列表（列表里 Esc 又回命令行，两边都能来回）
+            if (txtCmd.TextLength == 0) { FocusList(); e.Handled = true; return; }
+            txtCmd.Clear(); e.Handled = true; return;
+        }
 
         // Alt 组合：导航键在命令行里也要能用（焦点默认就在命令行）
         if (e.Alt && e.KeyCode == Keys.Up) { GoUp(); e.Handled = true; e.SuppressKeyPress = true; return; }
@@ -1938,7 +2193,7 @@ class Frm : Form, IMessageFilter
 
     static readonly string[] CmdNames = { "ls", "ll", "ic", "icons", "cd", "pwd", "up", "back",
                                           "mkdir", "md", "rm", "del", "rmdir", "mv", "cp", "cat",
-                                          "touch", "trash", "hist", "sort", "sel", "icon", "big", "open",
+                                          "touch", "trash", "hist", "sort", "ta", "typeahead", "sel", "icon", "big", "open",
                                           "wt", "term", "terminal", "ex", "explorer",
                                           "info", "roots", "clear", "help", "exit" };
     readonly List<Cand> compCands = new List<Cand>();
@@ -2127,6 +2382,7 @@ class Frm : Form, IMessageFilter
             case "touch": TouchCmd(a1); break;
             case "trash": TrashCmd(args); break;
             case "sort": SortCmd(t); break;
+            case "ta": case "typeahead": TaCmd(a1); break;
             case "sel": SelCmd(a1); break;
             case "icon": case "size": IconCmd(args); break;
             case "big": CycleIconSize(); break;
@@ -2142,7 +2398,7 @@ class Frm : Form, IMessageFilter
             case "hist": case "history": HistCmd(flags, args); break;
             case "clear": case "cls": hist.Clear(); hIdx = 0; lblStatus.Text = ""; break;
             case "help": case "?":
-                Msg("ls [-l|-t|-S|-r] [目录] · cd [-|~|目录] · pwd · mkdir [-p] · rm [-r] [-f] · rmdir · mv · cp [-r] · cat · touch · trash · hist [-t|-c|-x] [关键字] · sel · sort · icon · big · open · wt [目录|文件] [命令…] · ex [-s] [目录|文件] · info · roots · clear · exit");
+                Msg("ls [-l|-t|-S|-r] [目录] · cd [-|~|目录] · pwd · mkdir [-p] · rm [-r] [-f] · rmdir · mv · cp [-r] · cat · touch · trash · hist [-t|-c|-x] [关键字] · ta [search|select] · sel · sort · icon · big · open · wt [目录|文件] [命令…] · ex [-s] [目录|文件] · info · roots · clear · exit");
                 break;
             case "exit": case "q": Close(); break;
             default: Msg("未知命令: " + v + "（help 看列表）"); break;
@@ -2522,6 +2778,22 @@ class Frm : Form, IMessageFilter
         Msg("排序：" + ColNames[sortCol] + (sortAsc ? " 升序" : " 降序"));
     }
 
+    void TaCmd(string mode)
+    {
+        if (mode != null && mode.Length > 0)
+        {
+            string m = mode.ToLowerInvariant();
+            if (m == "search" || m == "filter") taSearch = true;
+            else if (m == "select" || m == "jump") taSearch = false;
+            else { Msg("用法: ta [search|select]"); return; }
+            TypeAheadReset(true);
+        }
+        Msg("typeahead: " + (taSearch
+            ? "search —— 输入即过滤列表（Nautilus 默认）"
+            : "select —— 只选中第一个命中，不过滤（Nautilus 补丁）") +
+            "   ·   ta search|select 切换");
+    }
+
     void OpenNamed(string name)
     {
         if (name == null) { Msg("用法: open 名字"); return; }
@@ -2828,8 +3100,119 @@ class Frm : Form, IMessageFilter
             }
         }
 
+        // 直接输入选择（type-ahead）：真建几个文件，按前缀选；顺带验 Backspace / 中文 / 超时 / 换目录清空
+        if (!rootsView)
+        {
+            string taDir = Path.Combine(curPath, "__xg_ta");
+            string taBack = curPath;
+            try
+            {
+                Directory.CreateDirectory(taDir);
+                File.WriteAllText(Path.Combine(taDir, "alpha.txt"), "a\r\n");
+                File.WriteAllText(Path.Combine(taDir, "alpine.txt"), "b\r\n");
+                File.WriteAllText(Path.Combine(taDir, "beta.txt"), "c\r\n");
+                File.WriteAllText(Path.Combine(taDir, "中文条目.txt"), "d\r\n");
+                Run("cd __xg_ta");
+                Run("ls");
+
+                TypeAheadReset(true);
+                SelectOnly(lv.Items.Count - 1);       // 先把焦点放到最后：证明命中项是按列表顺序从头找的
+                TypeAheadChar('a');
+                TaCheck(sb, "a -> alpha", FocusedName(), "alpha.txt", taBuf.ToString(), "a");
+                sb.AppendLine("typeahead mirror: mirror=" + taMirror + " cmd='" + txtCmd.Text + "' prompt='" + lblPrompt.Text + "'");
+                TypeAheadChar('l');
+                TaCheck(sb, "al -> alpha", FocusedName(), "alpha.txt", taBuf.ToString(), "al");
+                TypeAheadChar('p');
+                TaCheck(sb, "alp -> alpha (alpha 也在前缀里)", FocusedName(), "alpha.txt", taBuf.ToString(), "alp");
+                TypeAheadChar('i');
+                TaCheck(sb, "alpi -> alpine", FocusedName(), "alpine.txt", taBuf.ToString(), "alpi");
+                TypeAheadBackspace();
+                TaCheck(sb, "backspace -> alp", FocusedName(), "alpha.txt", taBuf.ToString(), "alp");
+                TypeAheadBackspace();
+                TaCheck(sb, "backspace -> al", FocusedName(), "alpha.txt", taBuf.ToString(), "al");
+                sb.AppendLine("typeahead display: mirror=" + taMirror + " cmd='" + txtCmd.Text +
+                              "' prompt='" + lblPrompt.Text + "' pill=" + lblTypeAhead.Visible + " text='" + lblTypeAhead.Text + "'");
+                TypeAheadReset(true);
+                sb.AppendLine("typeahead reset: buf='" + taBuf + "' mirror=" + taMirror +
+                              " cmd='" + txtCmd.Text + "' prompt='" + lblPrompt.Text + "' pill=" + lblTypeAhead.Visible);
+
+                TypeAheadChar('中');
+                TaCheck(sb, "中文 -> 中文条目", FocusedName(), "中文条目.txt", taBuf.ToString(), "中");
+                TypeAheadReset(true);
+
+                TypeAheadChar('z');
+                sb.AppendLine("typeahead no match: focus=" + FocusedName() + " cmd='" + txtCmd.Text + "' prompt='" + lblPrompt.Text + "'");
+                TypeAheadReset(true);
+
+                TypeAheadChar('b'); TypeAheadChar('e');
+                taTimer.Stop();
+                TypeAheadReset(true);                  // 等价于 1 秒超时回调
+                sb.AppendLine("typeahead timeout: buf='" + taBuf + "' mirror=" + taMirror + " cmd='" + txtCmd.Text + "'");
+
+                // 两条路：Nautilus 默认 search = 过滤列表；补丁 select = 只选中
+                Run("ta select");
+                TypeAheadChar('a');
+                sb.AppendLine("ta select: items=" + items.Count + "/" + allItems.Count + " focus=" + FocusedName());
+                TypeAheadReset(true);
+                Run("ta search");
+                TypeAheadChar('a');
+                sb.AppendLine("ta search: items=" + items.Count + "/" + allItems.Count + " focus=" + FocusedName());
+                TypeAheadReset(true);
+
+                // 真实消息路径：WM_CHAR 进 IconList.WndProc（不是直接调 TypeAheadChar）。
+                // 原生 ListView 收到 WM_CHAR 会自己找前缀，这一步就是防那套抢输入。
+                TypeAheadReset(true);
+                SelectOnly(0);
+                Xg.SendMessage(lv.Handle, 0x0102, (IntPtr)(int)'a', IntPtr.Zero);
+                TaCheck(sb, "WM_CHAR a -> alpha", FocusedName(), "alpha.txt", taBuf.ToString(), "a");
+                Xg.SendMessage(lv.Handle, 0x0102, (IntPtr)(int)'l', IntPtr.Zero);
+                TaCheck(sb, "WM_CHAR al -> alpha", FocusedName(), "alpha.txt", taBuf.ToString(), "al");
+                TypeAheadReset(true);
+                Xg.SendMessage(lv.Handle, 0x0102, (IntPtr)(int)'中', IntPtr.Zero);
+                TaCheck(sb, "WM_CHAR 中 -> 中文条目", FocusedName(), "中文条目.txt", taBuf.ToString(), "中");
+                TypeAheadReset(true);
+
+                // Ctrl+L 回命令行；命令行空着按 Esc 再回列表
+                TypeAheadChar('a');                     // 先制造一个过滤状态
+                bool wasFiltering = filtering;
+                LvKeyDown(lv, new KeyEventArgs(Keys.L | Keys.Control));
+                sb.AppendLine("ctrl+L -> cmd focus=" + txtCmd.Focused + " selAll=" + (txtCmd.SelectionLength == txtCmd.TextLength) +
+                              " filtering=" + filtering + " items=" + items.Count + "/" + allItems.Count + " (was " + wasFiltering + ")");
+                CmdKeyDown(txtCmd, new KeyEventArgs(Keys.Escape));
+                sb.AppendLine("esc(empty cmd) -> list focus=" + lv.Focused);
+                Message msg = new Message();
+                ProcessCmdKey(ref msg, Keys.Control | Keys.F);
+                sb.AppendLine("ctrl+F -> list focus=" + lv.Focused);
+
+                TypeAheadChar('a');
+                Run("cd ..");
+                sb.AppendLine("typeahead on cd: buf='" + taBuf + "' mirror=" + taMirror + " cmd='" + txtCmd.Text + "'");
+            }
+            catch (Exception ex) { sb.AppendLine("typeahead EXCEPTION " + ex.Message); }
+            finally
+            {
+                try { if (Directory.Exists(taDir)) Directory.Delete(taDir, true); } catch { }
+                try { LoadFolder(taBack); } catch { }
+            }
+        }
+
         Run("roots");
         sb.AppendLine("roots: rows=" + lv.Items.Count + " view=" + lv.View + " crumbs=" + crumb.Controls.Count);
+    }
+
+    // 自检用：当前焦点行的名字
+    string FocusedName()
+    {
+        ListViewItem row = lv.FocusedItem;
+        return row == null ? "-" : row.Text;
+    }
+
+    // 自检用：一行 ok / 一行 FAIL（build.ps1 -Test 会把 FAIL 当失败）
+    void TaCheck(StringBuilder sb, string what, string got, string expect, string buf, string bufExpect)
+    {
+        bool ok = string.Equals(got, expect, StringComparison.CurrentCultureIgnoreCase) && buf == bufExpect;
+        sb.AppendLine((ok ? "typeahead ok:  " : "FAIL typeahead: ") + what +
+                      " -> " + got + "  (expect " + expect + ", buf='" + buf + "')");
     }
 
     void Roots()
@@ -2852,6 +3235,9 @@ class Frm : Form, IMessageFilter
             if (d.IsReady) add("盘 " + d.Name, d.Name);
 
         rootsView = true;
+        taBuf.Clear(); taTimer.Stop(); EndTypeAheadMirror();
+        filtering = false;
+        allItems = roots;
         items = roots;
         ApplySort(items);
         Text = "命名空间根 — xg";
@@ -3121,6 +3507,22 @@ class HistForm : Form
 class IconList : ListView
 {
     public Func<int, bool> Zoom;
+    // 返回 true = 这个字符已被消费（不再交给原生 ListView）
+    public Func<char, bool> TypeChar;
+
+    const int WM_CHAR = 0x0102;
+
+    // 原生 ListView 收到 WM_CHAR 会自己找前缀、改选中项；这里先截住，
+    // 让 xg 的 type-ahead 独占输入，避免两套查找各选各的。
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WM_CHAR && TypeChar != null)
+        {
+            char c = (char)m.WParam.ToInt32();
+            if (TypeChar(c)) return;
+        }
+        base.WndProc(ref m);
+    }
 
     protected override void OnMouseWheel(MouseEventArgs e)
     {
