@@ -37,7 +37,8 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Test
 ```
 
 ```powershell
-xg                 # 图形界面，当前目录
+xg                 # 图形界面，起点是「此电脑」（直接选盘）
+xg .               # 图形界面，当前目录
 xs                 # 终端 TUI
 xc                 # 驱动当前资源管理器窗口
 xf sel             # 把选中项写进清单

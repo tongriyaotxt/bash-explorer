@@ -21,6 +21,25 @@
 
 ---
 
+## 2026-11-19 这轮：初始界面落在「此电脑」
+
+**需求**：打开 xg 先看到盘符，能直接选盘；不要每次都从 C 盘退一层。
+
+**做法**（`xs/xg.cs`、`xs/xg.cmd`、已装的 `%LOCALAPPDATA%\Microsoft\WindowsApps\xg.cmd`）：
+
+1. `Xg.ThisPC = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"`（Shell 的 Drives 文件夹）；`Main` 没有位置参数就用它 —— 打开即「此电脑」。
+2. 「就在这儿开」留了两条路：`xg .`（`LoadFolder` 把 `.` 换成 `Environment.CurrentDirectory`）和 `xg --here`；`LoadFolder("")` 也从「用户目录」改成「此电脑」，和启动默认一致。
+3. 启动器不再硬塞 `%CD%`：`xg` 裸敲 = 此电脑，`xg .` = 当前目录，`xg PATH` = 指定位置。**两个 xg.cmd 都只写 ASCII**（cmd 按调用方代码页解析 .cmd，中文注释会被拆成命令，实测 `ser`/`在` 报错）。
+4. 面包屑对虚拟命名空间只画名字（「此电脑」），GUID 收进 tooltip —— 初始界面第一眼不该是一串 `::{20D04FE0-…}`。
+5. `GoUp` 到此电脑就停（`已经是最上层：此电脑`），不再原地重载一遍。
+6. `Open` 补一条：`IsFolder=false` 但 `Path` 是目录的项（云盘客户端）直接进，不交给 `Process.Start` 去弹资源管理器。
+
+**自检**：新增一行 `thispc ok: name=此电脑 rows=6 drives=6 crumb='此电脑'`（`cd ::{20D04FE0-…}` 之后数盘符），`build.ps1 -Test` 全绿，Defender 干净。
+
+**验证**：`cd /d C:\` 之后裸敲 `xg`，标题就是 `此电脑 — xg`，列表 F:/C:/D:/E: + 两个云盘（`_shot\xg-thispc.png`）。回滚：`xg.exe.prev` 是这一轮之前的产物。
+
+---
+
 ## 2026-11-16 这轮：直接输入（Nautilus type-ahead / search）
 
 **需求**：学 Nautilus 的「直接输入选中文件」，并看看它还有什么值得搬。

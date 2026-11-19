@@ -8,6 +8,10 @@
 //            folders, file types, shortcuts). Icon view uses real shell
 //            thumbnails.
 //
+// start  : no positional argument -> "此电脑" (::{20D04FE0-...}, the Drives
+//          folder: pick a drive right away instead of landing on C:).
+//          "xg ." or "--here" -> the current directory; a path -> that path.
+//
 // build: csc /target:winexe /r:System.Windows.Forms.dll /r:System.Drawing.dll
 //            /r:Microsoft.CSharp.dll xg.cs
 using System;
@@ -41,16 +45,22 @@ static class Xg
         try { shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application")); }
         catch { MessageBox.Show("无法创建 Shell.Application"); return; }
 
-        string start = Environment.CurrentDirectory;
+        // 起点默认是"此电脑"（能直接选盘），不是当前目录：
+        //   xg                  → 此电脑
+        //   xg .                → 当前目录（"就开这儿"）
+        //   xg D:\项目           → 指定目录
+        string start = null;
         bool selfTest = false;
         string runScript = null;
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i];
             if (a == "--selftest") { selfTest = true; if (i + 1 < args.Length && !args[i + 1].StartsWith("--")) { start = args[i + 1]; i++; } }
+            else if (a == "--here") { start = Environment.CurrentDirectory; }
             else if (a == "--run") { if (i + 1 < args.Length) { runScript = args[i + 1]; i++; } }
             else if (!a.StartsWith("--")) start = a;
         }
+        if (string.IsNullOrEmpty(start)) start = Xg.ThisPC;
         var frm = new Frm(start);
         Application.AddMessageFilter(frm);       // 滚轮转发到列表
 
@@ -124,6 +134,10 @@ static class Xg
     public const uint LVM_SETIMAGELIST = 0x1003;
     public const uint LVM_SETICONSPACING = 0x1035;
     public const int LVSIL_NORMAL = 0, LVSIL_SMALL = 1;
+
+    // "此电脑" = Shell 的 Drives 文件夹（CLSID_MyComputer）：内容是各盘符 + 云盘。
+    // 也是 xg 的默认起点——打开就能选盘，不用先从 C 盘退到上层。
+    public const string ThisPC = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
 
     public static IntPtr SystemImageList(uint which)
     {
@@ -982,15 +996,18 @@ class Frm : Form, IMessageFilter
         }
         else if (curPath.Length == 0 || curPath.StartsWith("::") || curPath.StartsWith("shell:"))
         {
+            // 虚拟命名空间（此电脑 / 回收站 …）没有可拆的上级路径：只画名字，
+            // GUID 收进 tooltip——初始界面第一眼不该是一串 ::{20D04FE0-…}
             var l = new Label();
-            l.Text = curPath.Length == 0 ? "(未定位)" : curName + "    " + curPath;
+            l.Text = curPath.Length == 0 ? "(未定位)" : curName;
             l.AutoSize = false;
             l.Height = crumb.Height > 10 ? crumb.Height : (int)(26 * scale);
             l.Width = Math.Max(200, crumb.Width - 4);
             l.TextAlign = ContentAlignment.MiddleLeft;
-            l.ForeColor = Color.FromArgb(120, 220, 255);
+            l.ForeColor = Color.FromArgb(238, 238, 238);
             l.Font = crumbFont;
             l.BackColor = Color.Transparent;
+            if (curPath.Length > 0) tip.SetToolTip(l, curName + "\n" + curPath);
             crumb.Controls.Add(l);
         }
         else
@@ -1152,7 +1169,8 @@ class Frm : Form, IMessageFilter
         try
         {
             path = (path ?? "").Trim().Trim('"');
-            if (path.Length == 0) path = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (path.Length == 0) path = Xg.ThisPC;          // 空 = 此电脑，和启动默认一致
+            if (path == ".") path = Environment.CurrentDirectory;
 
             if (path == "..") { try { f = cur.ParentFolder; } catch { f = null; } }
             else if (path == "-")
@@ -1551,6 +1569,9 @@ class Frm : Form, IMessageFilter
     void Open(Xg.Item it)
     {
         if (it.IsFolder) { LoadFolder(it.Path); return; }
+        // "此电脑"里有些项（云盘客户端）报 IsFolder=false，Path 其实是目录：
+        // 当文件 Start 只会弹出资源管理器，不如直接进它
+        if (it.Path != null && Directory.Exists(it.Path)) { LoadFolder(it.Path); return; }
         if (Viewer.IsImage(it.Path)) { OpenViewer(it); return; }
         try { Process.Start(it.Path); Msg("已打开 " + it.Name); }
         catch (Exception e) { Msg(e.Message); }
@@ -1947,8 +1968,9 @@ class Frm : Form, IMessageFilter
 
         if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent)) { LoadFolder(parent); return; }
         if (rootsView) { Msg("已经是最上层"); return; }
+        if (string.Equals(curPath, Xg.ThisPC, StringComparison.OrdinalIgnoreCase)) { Msg("已经是最上层：此电脑"); return; }
         // 盘根 / 虚拟命名空间 → 此电脑
-        LoadFolder("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}");
+        LoadFolder(Xg.ThisPC);
     }
 
     void RenameSelected()
@@ -3198,6 +3220,16 @@ class Frm : Form, IMessageFilter
 
         Run("roots");
         sb.AppendLine("roots: rows=" + lv.Items.Count + " view=" + lv.View + " crumbs=" + crumb.Controls.Count);
+
+        // 默认起点必须是"此电脑"：打开就能选盘，而不是停在 C 盘
+        Run("cd " + Xg.ThisPC);
+        int drives = 0;
+        foreach (var it in items)
+            if (it.Path != null && it.Path.Length >= 2 && it.Path[1] == ':') drives++;
+        bool atThisPc = curName == "此电脑" && drives > 0;
+        sb.AppendLine((atThisPc ? "thispc ok:  " : "FAIL thispc: ") +
+                      "name=" + curName + " rows=" + lv.Items.Count + " drives=" + drives +
+                      " crumb='" + (crumb.Controls.Count > 0 ? crumb.Controls[0].Text : "") + "'");
     }
 
     // 自检用：当前焦点行的名字

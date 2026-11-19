@@ -19,3 +19,6 @@ xg-diag.txt
 *.user
 Thumbs.db
 desktop.ini
+
+# rollback copies
+*.prev
